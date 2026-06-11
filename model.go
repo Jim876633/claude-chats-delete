@@ -15,45 +15,53 @@ import (
 // is used: shortened timestamp, no VERSION column, two-line help text.
 const compactModeWidth = 110
 
-const (
-	tabChats    = 0
-	tabSettings = 1
-)
 
-var tabs = []string{"Chats", "Settings"}
 
 var (
-	// Styles
+	// One Dark Pro palette approximations
 	activeTabStyle = lipgloss.NewStyle().
 			Bold(true).
-			Background(adaptiveColor("6", "6")).
-			Foreground(adaptiveColor("0", "0")).
-			Padding(0, 1)
+			Foreground(adaptiveColor("73", "6")).
+			Underline(true)
 
 	inactiveTabStyle = lipgloss.NewStyle().
-				Foreground(adaptiveColor("241", "8")).
-				Padding(0, 1)
+				Foreground(adaptiveColor("59", "8"))
 
 	selectedStyle = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(adaptiveColor("226", "11"))
+			Foreground(adaptiveColor("114", "10"))
 
 	cursorStyle = lipgloss.NewStyle().
-			Reverse(true)
+			Background(lipgloss.Color("#2c3d3d"))
 
 	dimStyle = lipgloss.NewStyle().
-			Foreground(adaptiveColor("240", "8"))
+			Foreground(adaptiveColor("59", "8"))
 
 	errorStyle = lipgloss.NewStyle().
-			Foreground(adaptiveColor("196", "9")).
+			Foreground(adaptiveColor("203", "9")).
 			Bold(true)
 
 	successStyle = lipgloss.NewStyle().
-			Foreground(adaptiveColor("46", "10")).
+			Foreground(adaptiveColor("114", "10")).
 			Bold(true)
 
 	helpStyle = lipgloss.NewStyle().
-			Foreground(adaptiveColor("241", "8"))
+			Foreground(adaptiveColor("59", "8"))
+
+	accentStyle = lipgloss.NewStyle().
+			Foreground(adaptiveColor("176", "13")).
+			Bold(true)
+
+	orangeStyle = lipgloss.NewStyle().
+			Foreground(adaptiveColor("173", "11"))
+
+	noTitleStyle = lipgloss.NewStyle().
+			Foreground(adaptiveColor("59", "8")).
+			Italic(true)
+
+	headerBgStyle = lipgloss.NewStyle().
+			Background(lipgloss.Color("233")).
+			Foreground(adaptiveColor("59", "8"))
 )
 
 // adaptiveColor returns a color that adapts to terminal capabilities
@@ -64,6 +72,57 @@ func adaptiveColor(rich string, fallback string) lipgloss.TerminalColor {
 		return lipgloss.Color(fallback)
 	}
 	return lipgloss.Color(rich)
+}
+
+// formatLines formats a line count with thousands separator.
+func formatLines(n int) string {
+	if n >= 1000 {
+		return fmt.Sprintf("%d,%03d", n/1000, n%1000)
+	}
+	return fmt.Sprintf("%d", n)
+}
+
+// projectHashIndex returns a stable palette index for a project path.
+// Hashes the last 2 path segments so similar prefixes get different colors.
+func projectHashIndex(project string) uint32 {
+	key := project
+	if idx := strings.LastIndex(project, "/"); idx > 0 {
+		if prev := strings.LastIndex(project[:idx], "/"); prev >= 0 {
+			key = project[prev+1:]
+		} else {
+			key = project[idx+1:]
+		}
+	}
+	const fnvPrime uint32 = 16777619
+	h := uint32(2166136261)
+	for _, r := range key {
+		h ^= uint32(r)
+		h *= fnvPrime
+	}
+	return h % 8
+}
+
+// colorForProject returns a muted One Dark Pro accent color for a project.
+func colorForProject(project string) lipgloss.Color {
+	palette := []lipgloss.Color{"167", "173", "179", "114", "110", "75", "176", "139"}
+	return palette[projectHashIndex(project)]
+}
+
+// bgTintForProject returns a TrueColor background tinted ~10% toward the project accent color.
+// Base background: #282c34 (One Dark Pro).
+func bgTintForProject(project string) lipgloss.Color {
+	// 10% blend of each accent on #282c34
+	tints := []lipgloss.Color{
+		"#3a323a", // red   #e06c75
+		"#393739", // orange #d19a66
+		"#3b3b3b", // yellow #e5c07b
+		"#333b3b", // green  #98c379
+		"#2c3040", // cornflower #87afd7
+		"#2e3947", // blue   #61afef
+		"#383445", // purple #c678dd
+		"#363640", // mauve  #b48ead
+	}
+	return tints[projectHashIndex(project)]
 }
 
 // Messages
@@ -90,7 +149,6 @@ type groupRow struct {
 }
 
 type model struct {
-	tab           int
 	cfg           *Config
 	chats         []Chat
 	cursor        int
@@ -111,13 +169,23 @@ type model struct {
 	// so the selection state doesn't leak into the next d gesture.
 	autoSelected bool
 
-	// Settings tab
-	settingsCursor int
-
 	// Grouped view state
 	grouped          bool
 	expandedProjects map[string]bool
 	groupRows        []groupRow // virtual row list built from chats + expanded state
+
+	// Position to restore after deletion
+	postDeleteCursor int
+
+	// Help modal
+	showHelp bool
+
+	// Preview modal
+	showPreview         bool
+	previewRawMsgs      []PreviewMessage
+	previewAllLines     []PreviewLine
+	previewScrollOffset int
+	previewForUUID      string
 }
 
 func initialModel(cfg *Config) model {
@@ -167,6 +235,31 @@ func (m *model) rebuildGroupRows() {
 	m.groupRows = rows
 }
 
+// loadPreviewForCursor loads preview lines for the chat currently under the cursor.
+// Uses previewForUUID as a cache key to avoid re-reading the same file.
+func (m *model) loadPreviewForCursor() {
+	var chatPath, chatUUID string
+	if m.grouped {
+		if m.cursor < len(m.groupRows) && !m.groupRows[m.cursor].isHeader {
+			c := m.chats[m.groupRows[m.cursor].chatIdx]
+			chatPath, chatUUID = c.Path, c.UUID
+		}
+	} else {
+		if m.cursor < len(m.chats) {
+			c := m.chats[m.cursor]
+			chatPath, chatUUID = c.Path, c.UUID
+		}
+	}
+	if chatUUID == "" || chatUUID == m.previewForUUID {
+		return
+	}
+	m.previewRawMsgs = loadRawPreviewMsgs(chatPath, 200)
+	textWidth := m.previewTextWidth()
+	m.previewAllLines = renderPreviewMessages(m.previewRawMsgs, textWidth)
+	m.previewScrollOffset = 0
+	m.previewForUUID = chatUUID
+}
+
 // chatIndicesForProject returns all chat indices belonging to a project.
 func (m model) chatIndicesForProject(project string) []int {
 	var indices []int
@@ -179,20 +272,20 @@ func (m model) chatIndicesForProject(project string) []int {
 }
 
 func (m model) renderTabBar() string {
-	appName := dimStyle.Render("Claude Code Manager")
-	var tabParts []string
-	for i, name := range tabs {
-		if i == m.tab {
-			tabParts = append(tabParts, activeTabStyle.Render(name))
-		} else {
-			tabParts = append(tabParts, inactiveTabStyle.Render(name))
-		}
+	appName := accentStyle.Render("claude chats")
+	left := appName
+	var stats string
+	if len(m.selected) > 0 {
+		badge := lipgloss.NewStyle().
+			Background(adaptiveColor("73", "6")).
+			Foreground(adaptiveColor("234", "0")).
+			Bold(true).
+			Padding(0, 1).
+			Render(fmt.Sprintf("%d selected", len(m.selected)))
+		stats = dimStyle.Render(fmt.Sprintf("%d chats", len(m.chats))) + "  " + badge
+	} else {
+		stats = dimStyle.Render(fmt.Sprintf("%d chats", len(m.chats)))
 	}
-	left := appName + "   " + strings.Join(tabParts, " ")
-	if m.tab != tabChats {
-		return left
-	}
-	stats := dimStyle.Render(fmt.Sprintf("Total: %d | Selected: %d", len(m.chats), len(m.selected)))
 	width := m.width
 	if width < 75 {
 		width = 75
@@ -205,10 +298,11 @@ func (m model) renderTabBar() string {
 }
 
 func (m model) visibleHeight() int {
-	fixed := 9 // tabbar(1) + sep(1) + col-header(1) + sep(1) + bottom-sep(1) + help(1) + scroll(0-1) + status(0-1)
+	fixed := 9 // tabbar(1) + col-header(1) + sep(1) + bottom-sep(1) + help(1) + status(0-1)
 	if m.width < compactModeWidth {
 		fixed = 10 // compact: +1 for extra help line
 	}
+
 	h := m.height - fixed
 	if h < 1 {
 		h = 10
@@ -225,13 +319,61 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		if m.showPreview && len(m.previewRawMsgs) > 0 {
+			m.previewAllLines = renderPreviewMessages(m.previewRawMsgs, m.previewTextWidth())
+		}
 		return m, nil
 
 	case tea.KeyMsg:
+		// Help modal intercepts ALL keys
+		if m.showHelp {
+			m.showHelp = false
+			return m, nil
+		}
+
+		// Preview modal intercepts ALL keys
+		if m.showPreview {
+			contentH := m.previewContentHeight()
+			maxScroll := len(m.previewAllLines) - contentH
+			if maxScroll < 0 { maxScroll = 0 }
+			switch msg.String() {
+			case "up", "k":
+				if m.previewScrollOffset > 0 { m.previewScrollOffset-- }
+			case "down", "j":
+				if m.previewScrollOffset < maxScroll { m.previewScrollOffset++ }
+			case "f", "pgdown":
+				m.previewScrollOffset += contentH
+				if m.previewScrollOffset > maxScroll { m.previewScrollOffset = maxScroll }
+			case "b", "pgup":
+				m.previewScrollOffset -= contentH
+				if m.previewScrollOffset < 0 { m.previewScrollOffset = 0 }
+			case "g":
+				m.previewScrollOffset = 0
+			case "G":
+				m.previewScrollOffset = maxScroll
+			default:
+				m.showPreview = false
+				m.previewScrollOffset = 0
+			}
+			return m, nil
+		}
+
 		// Confirmation dialog intercepts esc before global keys
 		if m.confirmDelete {
 			switch msg.String() {
 			case "enter":
+				if m.grouped {
+					// In grouped mode cursor is a groupRows index — just clamp it after rebuild
+					m.postDeleteCursor = m.cursor
+				} else {
+					// In flat mode, land on the item right after the deleted block
+					minSel := len(m.chats)
+					for idx := range m.selected {
+						if idx < minSel { minSel = idx }
+					}
+					if minSel == len(m.chats) { minSel = m.cursor }
+					m.postDeleteCursor = minSel
+				}
 				return m, m.deleteSelectedChats()
 			case "esc", "n":
 				m.confirmDelete = false
@@ -247,54 +389,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "ctrl+c", "q", "esc":
 			return m, tea.Quit
-		case "left":
-			if m.tab > 0 {
-				m.tab--
-			}
-			return m, nil
-		case "right":
-			if m.tab < len(tabs)-1 {
-				m.tab++
-			}
+		case "?":
+			m.showHelp = true
 			return m, nil
 		}
 
-		// Settings tab
-		if m.tab == tabSettings {
-			switch msg.String() {
-			case "up", "k":
-				if m.settingsCursor > 0 {
-					m.settingsCursor--
-				}
-			case "down", "j":
-				if m.settingsCursor < settingsCount-1 {
-					m.settingsCursor++
-				}
-			case "enter":
-				if m.cfg != nil {
-					switch m.settingsCursor {
-					case settingAutoUpdates:
-						m.cfg.AutoUpdates = !m.cfg.AutoUpdates
-					case settingGroupByProject:
-						m.cfg.GroupByProject = !m.cfg.GroupByProject
-						m.grouped = m.cfg.GroupByProject
-						if m.grouped {
-							m.rebuildGroupRows()
-							m.cursor = 0
-							m.scrollOffset = 0
-						} else {
-							m.groupRows = nil
-							m.cursor = 0
-							m.scrollOffset = 0
-						}
-					}
-					saveConfig(m.cfg)
-				}
-			}
-			return m, nil
-		}
-
-		// Chats tab: grouped mode
+		// Grouped mode
 		if m.grouped {
 			return m.updateGrouped(msg)
 		}
@@ -391,6 +491,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.confirmDelete = true
 			}
 
+		case "m":
+			// Toggle group by project
+			if m.cfg != nil {
+				m.cfg.GroupByProject = !m.cfg.GroupByProject
+				m.grouped = m.cfg.GroupByProject
+				if m.grouped {
+					m.rebuildGroupRows()
+				} else {
+					m.groupRows = nil
+				}
+				m.cursor = 0
+				m.scrollOffset = 0
+				saveConfig(m.cfg)
+			}
+
 		case "r":
 			// Refresh
 			m.chats = findAllChats()
@@ -401,6 +516,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.error = ""
 			m.deleted = 0
 			m.copiedMsg = ""
+			m.previewForUUID = ""
+
+		case "p":
+			if !m.showPreview {
+				m.previewForUUID = ""
+				m.loadPreviewForCursor()
+				m.showPreview = true
+			}
 
 		case "c":
 			// Copy UUID to clipboard
@@ -429,12 +552,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.chats = findAllChats()
 		m.selected = make(map[int]bool)
 		m.autoSelected = false
-		m.cursor = 0
 		m.scrollOffset = 0
 		m.confirmDelete = false
 		if m.grouped {
 			m.rebuildGroupRows()
+			m.cursor = m.postDeleteCursor
+			if m.cursor >= len(m.groupRows) { m.cursor = len(m.groupRows) - 1 }
+		} else {
+			m.cursor = m.postDeleteCursor
+			if m.cursor >= len(m.chats) { m.cursor = len(m.chats) - 1 }
 		}
+		if m.cursor < 0 { m.cursor = 0 }
 		// Clear other status messages
 		m.error = ""
 		m.copiedMsg = ""
@@ -465,80 +593,272 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *model) adjustScroll() {
 	visibleHeight := m.visibleHeight()
-	// confirmDelete dialog replaces help text, no additional space needed
-
 	if m.cursor < m.scrollOffset {
 		m.scrollOffset = m.cursor
 	} else if m.cursor >= m.scrollOffset+visibleHeight {
 		m.scrollOffset = m.cursor - visibleHeight + 1
 	}
+	if m.showPreview {
+		m.loadPreviewForCursor()
+	}
 }
 
-const (
-	settingAutoUpdates   = 0
-	settingGroupByProject = 1
-	settingsCount        = 2
-)
 
-func (m model) viewSettings() string {
-	width := m.width
-	if width < 75 {
-		width = 75
+// previewTextWidth returns the text content width passed to glamour for word-wrapping.
+func (m model) previewTextWidth() int {
+	w := m.width
+	if w < 40 { w = 40 }
+	modalW := w - 4
+	if modalW > 140 { modalW = 140 }
+	innerW := modalW - 4 // border(1)*2 + padding(1)*2
+	textW := innerW - 8  // role prefix area
+	if textW < 10 { textW = 10 }
+	return textW
+}
+
+func (m model) previewContentHeight() int {
+	h := m.height - 11 // borders(2) + header(2) + sep(2) + footer(1) + padding
+	if h < 3 { h = 3 }
+	if h > 60 { h = 60 }
+	return h
+}
+
+func (m model) viewPreview() string {
+	w := m.width
+	h := m.height
+	if w < 40 { w = 40 }
+	if h < 10 { h = 10 }
+
+	modalW := w - 4
+	if modalW > 140 { modalW = 140 }
+	innerW := modalW - 4 // border(1)*2 + padding(1)*2
+
+	contentH := m.previewContentHeight()
+
+	// Find chat metadata from UUID
+	var chat *Chat
+	for i := range m.chats {
+		if m.chats[i].UUID == m.previewForUUID {
+			c := m.chats[i]
+			chat = &c
+			break
+		}
 	}
 
 	var s strings.Builder
-	s.WriteString(m.renderTabBar())
-	s.WriteString("\n")
-	s.WriteString(dimStyle.Render(strings.Repeat("─", width)))
-	s.WriteString("\n\n")
 
-	// Auto-updates setting
-	autoVal := "OFF"
-	autoStyle := errorStyle
-	if m.cfg != nil && m.cfg.AutoUpdates {
-		autoVal = "ON"
-		autoStyle = successStyle
-	}
-	autoHint := ""
-	if m.cfg == nil || !m.cfg.AutoUpdates {
-		autoHint = "  " + dimStyle.Render("(use `claude-chats --update` for manual update)")
-	}
-	autoLine := fmt.Sprintf("  Auto-updates      %s%s", autoStyle.Render(autoVal), autoHint)
-	if m.settingsCursor == settingAutoUpdates {
-		s.WriteString(cursorStyle.Render(autoLine))
+	// Header block (2 lines)
+	if chat != nil {
+		projColor := colorForProject(chat.Project)
+		titleClean := runewidth.Truncate(chat.Title, innerW-20, "..")
+		dateStr := dimStyle.Render(chat.Timestamp)
+		titleStyled := accentStyle.Render(titleClean)
+		titleW := lipgloss.Width(titleStyled)
+		dateW := lipgloss.Width(dateStr)
+		gap1 := innerW - titleW - dateW
+		if gap1 < 1 { gap1 = 1 }
+		s.WriteString(titleStyled + strings.Repeat(" ", gap1) + dateStr + "\n")
+
+		projStr := lipgloss.NewStyle().Foreground(projColor).Render(truncateLeft(decodeProjectPath(chat.Project), 60))
+		closeHint := dimStyle.Render("any key · close")
+		projW := lipgloss.Width(projStr)
+		closeW := lipgloss.Width(closeHint)
+		gap2 := innerW - projW - closeW
+		if gap2 < 1 { gap2 = 1 }
+		s.WriteString(projStr + strings.Repeat(" ", gap2) + closeHint + "\n")
 	} else {
-		s.WriteString(autoLine)
+		s.WriteString("\n\n")
 	}
-	s.WriteString("\n")
 
-	// Group by project setting
-	groupVal := "OFF"
-	groupStyle := errorStyle
-	if m.cfg != nil && m.cfg.GroupByProject {
-		groupVal = "ON"
-		groupStyle = successStyle
-	}
-	groupLine := fmt.Sprintf("  Group by project  %s", groupStyle.Render(groupVal))
-	if m.settingsCursor == settingGroupByProject {
-		s.WriteString(cursorStyle.Render(groupLine))
-	} else {
-		s.WriteString(groupLine)
-	}
-	s.WriteString("\n")
+	// Separator
+	s.WriteString(dimStyle.Render(strings.Repeat("─", innerW)) + "\n")
 
-	s.WriteString("\n")
-	s.WriteString(dimStyle.Render(strings.Repeat("─", width)))
-	s.WriteString("\n")
-	s.WriteString(helpStyle.Render("↑/↓:Navigate | Enter:Toggle | ←/→:Switch tabs | q:Quit"))
-	s.WriteString("\n")
-	return s.String()
+	// Content viewport
+	userRoleStyle := lipgloss.NewStyle().Foreground(adaptiveColor("75", "4"))
+	asstRoleStyle := lipgloss.NewStyle().Foreground(adaptiveColor("176", "5"))
+	toolRoleStyle := dimStyle
+	toolTextStyle := lipgloss.NewStyle().Foreground(adaptiveColor("114", "10"))
+	// Continuation bar: same color as role, renders ▌ left-bar for multi-line messages
+	userBarStyle := userRoleStyle
+	asstBarStyle := asstRoleStyle
+	toolBarStyle := toolRoleStyle
+	maxText := innerW - 8
+	if maxText < 10 { maxText = 10 }
+
+	start := m.previewScrollOffset
+	end := start + contentH
+	if end > len(m.previewAllLines) { end = len(m.previewAllLines) }
+
+	for i := start; i < end; i++ {
+		line := m.previewAllLines[i]
+		// glamour already wrapped text — write as-is, no truncation
+		text := line.Text
+		var row string
+		if line.IsFirst {
+			switch line.Role {
+			case "user":
+				row = userRoleStyle.Render("▶ you") + "  " + text
+			case "asst":
+				row = asstRoleStyle.Render("◆ ai ") + "  " + text
+			case "tool":
+				row = toolRoleStyle.Render("$ sh ") + "  " + toolTextStyle.Render(text)
+			default:
+				row = "       " + text
+			}
+		} else {
+			switch line.Role {
+			case "user":
+				row = userBarStyle.Render("│") + "      " + text
+			case "asst":
+				row = asstBarStyle.Render("│") + "      " + text
+			case "tool":
+				row = toolBarStyle.Render("│") + "      " + toolTextStyle.Render(text)
+			default:
+				row = "       " + text
+			}
+		}
+		// Pad to innerW for stable box width
+		rowW := lipgloss.Width(row)
+		if rowW < innerW { row += strings.Repeat(" ", innerW-rowW) }
+		s.WriteString(row + "\n")
+	}
+	// Pad remaining lines
+	for i := end - start; i < contentH; i++ {
+		s.WriteString(strings.Repeat(" ", innerW) + "\n")
+	}
+
+	// Bottom separator
+	s.WriteString(dimStyle.Render(strings.Repeat("─", innerW)) + "\n")
+
+	// Footer
+	total := len(m.previewAllLines)
+	scrollInfo := fmt.Sprintf("%d-%d / %d", start+1, end, total)
+	if total == 0 { scrollInfo = "no messages" }
+	footLeft := helpStyle.Render("↑/↓ scroll  g/G top/end  " + scrollInfo)
+	footRight := helpStyle.Render("f/b page")
+	footGap := innerW - lipgloss.Width(footLeft) - lipgloss.Width(footRight)
+	if footGap < 1 { footGap = 1 }
+	s.WriteString(footLeft + strings.Repeat(" ", footGap) + footRight)
+
+	// Wrap in rounded border box
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(adaptiveColor("59", "8")).
+		Padding(0, 1).
+		Render(s.String())
+
+	return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, box,
+		lipgloss.WithWhitespaceBackground(lipgloss.Color("0")))
+}
+
+// viewHelp renders a modal box listing every keyboard shortcut.
+func (m model) viewHelp() string {
+	w := m.width
+	h := m.height
+	if w < 40 {
+		w = 40
+	}
+	if h < 10 {
+		h = 10
+	}
+
+	modalW := w - 4
+	if modalW > 70 {
+		modalW = 70
+	}
+	innerW := modalW - 4 // border(1)*2 + padding(1)*2
+
+	type shortcutGroup struct {
+		title string
+		rows  [][2]string
+	}
+
+	groups := []shortcutGroup{
+		{
+			title: "Navigation",
+			rows: [][2]string{
+				{"↑/k  ↓/j", "move cursor"},
+				{"f/PgDn  b/PgUp", "page down / up"},
+				{"F  B", "half page down / up"},
+				{"g/Home  G/End", "jump to top / bottom"},
+			},
+		},
+		{
+			title: "Selection",
+			rows: [][2]string{
+				{"space", "toggle selection"},
+				{"a", "select / deselect all"},
+				{"d", "delete selected (or item under cursor)"},
+			},
+		},
+		{
+			title: "View",
+			rows: [][2]string{
+				{"m", "toggle group by project"},
+				{"p", "preview chat"},
+				{"r", "refresh chat list"},
+				{"c", "copy chat UUID"},
+			},
+		},
+		{
+			title: "Grouped mode",
+			rows: [][2]string{
+				{"enter", "expand / collapse project"},
+				{"e", "expand all projects"},
+				{"w", "collapse all projects"},
+			},
+		},
+		{
+			title: "General",
+			rows: [][2]string{
+				{"?", "toggle this help"},
+				{"q/esc/ctrl+c", "quit"},
+			},
+		},
+	}
+
+	var s strings.Builder
+	titleStyle := accentStyle
+	keyStyle := lipgloss.NewStyle().Foreground(adaptiveColor("75", "4")).Bold(true)
+
+	s.WriteString(titleStyle.Render("Keyboard Shortcuts") + "\n")
+	s.WriteString(dimStyle.Render(strings.Repeat("─", innerW)) + "\n")
+
+	for gi, g := range groups {
+		if gi > 0 {
+			s.WriteString("\n")
+		}
+		s.WriteString(dimStyle.Render(g.title) + "\n")
+		for _, row := range g.rows {
+			key := keyStyle.Render(row[0])
+			pad := 16 - lipgloss.Width(row[0])
+			if pad < 1 {
+				pad = 1
+			}
+			s.WriteString("  " + key + strings.Repeat(" ", pad) + row[1] + "\n")
+		}
+	}
+
+	s.WriteString(dimStyle.Render(strings.Repeat("─", innerW)) + "\n")
+	s.WriteString(dimStyle.Render("any key · close"))
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(adaptiveColor("59", "8")).
+		Padding(0, 1).
+		Render(s.String())
+
+	return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, box,
+		lipgloss.WithWhitespaceBackground(lipgloss.Color("0")))
 }
 
 func (m model) View() string {
-	if m.tab == tabSettings {
-		return m.viewSettings()
+	if m.showHelp {
+		return m.viewHelp()
 	}
-
+	if m.showPreview {
+		return m.viewPreview()
+	}
 	if m.grouped {
 		return m.viewGrouped()
 	}
@@ -557,16 +877,14 @@ func (m model) View() string {
 
 	// In compact mode: hide VERSION, shorten TIMESTAMP to "MM-DD HH:MM" (11 chars)
 	// Fixed cols: indicator(4) + timestamp + version + lines(6) + gaps
-	var timestampWidth, versionWidth int
+	var timestampWidth int
 	var fixedWidth int
 	if compact {
 		timestampWidth = 11 // "01-15 14:32"
-		versionWidth = 0
-		fixedWidth = 4 + timestampWidth + 5 + 5 // indicator + ts + lines + gaps
+		fixedWidth = 2 + timestampWidth + 5 + 6 // indicator(2) + ts + lines + gaps
 	} else {
 		timestampWidth = 19 // "2025-01-15 14:32:10"
-		versionWidth = 8
-		fixedWidth = 44 // indicator(4) + ts(19) + version(8) + lines(5) + gaps(8)
+		fixedWidth = 34 // indicator(2) + ts(19) + lines(5) + gaps(8)
 	}
 
 	linesWidth := 5
@@ -587,21 +905,9 @@ func (m model) View() string {
 	s.WriteString(m.renderTabBar())
 	s.WriteString("\n")
 
-
-
-
-	s.WriteString(dimStyle.Render(strings.Repeat("─", width)))
-	s.WriteString("\n")
-
-	// Column headers
-	var header string
-	if compact {
-		headerFmt := fmt.Sprintf("    %%-*s  %%-%ds  %%-%ds  %%-%ds", linesWidth, titleWidth, projectWidth)
-		header = fmt.Sprintf(headerFmt, timestampWidth, "TIMESTAMP", "LINES", "TITLE", "PROJECT")
-	} else {
-		headerFmt := fmt.Sprintf("    %%-*s  %%-%ds  %%-%ds  %%-%ds  %%-%ds", versionWidth, linesWidth, titleWidth, projectWidth)
-		header = fmt.Sprintf(headerFmt, timestampWidth, "TIMESTAMP", "VERSION", "LINES", "TITLE", "PROJECT")
-	}
+	// Column headers with dark background
+	headerFmt := fmt.Sprintf("  %%-*s  %%%ds  %%-%ds  %%-%ds", linesWidth, titleWidth, projectWidth)
+	header := fmt.Sprintf(headerFmt, timestampWidth, "date", "lines", "title", "project")
 	s.WriteString(dimStyle.Render(header))
 	s.WriteString("\n")
 	s.WriteString(dimStyle.Render(strings.Repeat("─", width)))
@@ -632,7 +938,6 @@ func (m model) View() string {
 		} else {
 			timestamp = runewidth.Truncate(chat.Timestamp, timestampWidth, "")
 		}
-		version := runewidth.Truncate(chat.Version, versionWidth-1, "")
 		// TODO: msg column - maybe re-enable later
 		// msg := fmt.Sprintf("%d", chat.MessageCount)
 		// if chat.MessageCount == 0 {
@@ -650,34 +955,58 @@ func (m model) View() string {
 
 		titleClean := strings.NewReplacer("\n", " ").Replace(chat.Title)
 		title := runewidth.Truncate(titleClean, titleWidth, "..")
-		projectClean := strings.NewReplacer("\n", " ").Replace(chat.Project)
+		projectClean := decodeProjectPath(chat.Project)
 		project := truncateLeft(projectClean, projectWidth-2)
 
-		// Selection indicator
-		indicator := "[ ]"
-		if m.selected[i] {
-			indicator = "[✓]"
+		titlePad := titleWidth - runewidth.StringWidth(title)
+		if titlePad < 0 {
+			titlePad = 0
 		}
-
-		var line string
-		if compact {
-			lineFmt := fmt.Sprintf("%%s %%-*s  %%-%ds  %%-%ds  %%-%ds", linesWidth, titleWidth, projectWidth)
-			line = fmt.Sprintf(lineFmt, indicator, timestampWidth, timestamp, lines, title, project)
-		} else {
-			lineFmt := fmt.Sprintf("%%s %%-*s  %%-%ds  %%-%ds  %%-%ds  %%-%ds", versionWidth, linesWidth, titleWidth, projectWidth)
-			line = fmt.Sprintf(lineFmt, indicator, timestampWidth, timestamp, version, lines, title, project)
-		}
-
-		// Apply styles
-		style := lipgloss.NewStyle()
-		if m.selected[i] {
-			style = selectedStyle
-		}
+		noTitle := strings.HasPrefix(chat.Title, "[No title]")
+		projColor := colorForProject(chat.Project)
 		if i == m.cursor {
-			style = cursorStyle
+			// Cursor row: ▌ bar rendered separately with color + cursor bg
+			var cursorBar string
+			if m.selected[i] {
+				cursorBar = lipgloss.NewStyle().Foreground(adaptiveColor("114", "10")).Background(lipgloss.Color("#2c3d3d")).Render("▌")
+			} else {
+				cursorBar = lipgloss.NewStyle().Foreground(adaptiveColor("73", "6")).Background(lipgloss.Color("#2c3d3d")).Render("▌")
+			}
+			plainContent := " " +
+				fmt.Sprintf("%-*s", timestampWidth, timestamp) + "  " +
+				fmt.Sprintf("%*s", linesWidth, lines) + "  " +
+				title + strings.Repeat(" ", titlePad) + "  " +
+				fmt.Sprintf("%-*s", projectWidth-2, project)
+			contentW := runewidth.StringWidth(plainContent)
+			if contentW < width-1 {
+				plainContent += strings.Repeat(" ", width-1-contentW)
+			}
+			s.WriteString(cursorBar + cursorStyle.Render(plainContent))
+		} else {
+			// Normal row: individual part colors
+			var indStr string
+			if m.selected[i] {
+				indStr = selectedStyle.Render("▌") + " "
+			} else {
+				indStr = "  "
+			}
+			tsStr := dimStyle.Render(fmt.Sprintf("%-*s", timestampWidth, timestamp))
+			var linesStr string
+			if chat.LineCount > 500 {
+				linesStr = orangeStyle.Render(fmt.Sprintf("%*s", linesWidth, lines))
+			} else {
+				linesStr = dimStyle.Render(fmt.Sprintf("%*s", linesWidth, lines))
+			}
+			var titleRendered string
+			if noTitle {
+				titleRendered = noTitleStyle.Render(title) + strings.Repeat(" ", titlePad)
+			} else {
+				titleRendered = title + strings.Repeat(" ", titlePad)
+			}
+			line := indStr + tsStr + "  " + linesStr + "  " + titleRendered + "  " +
+				lipgloss.NewStyle().Foreground(projColor).Render(project)
+			s.WriteString(line)
 		}
-
-		s.WriteString(style.Render(line))
 		s.WriteString("\n")
 	}
 
@@ -687,6 +1016,8 @@ func (m model) View() string {
 		s.WriteString(dimStyle.Render(scrollInfo))
 		s.WriteString("\n")
 	}
+
+
 
 	// Bottom separator
 	s.WriteString(dimStyle.Render(strings.Repeat("─", width)))
@@ -711,14 +1042,12 @@ func (m model) View() string {
 		s.WriteString(helpStyle.Render("[ENTER=Yes] [ESC=No]"))
 		s.WriteString("\n")
 	} else if compact {
-		actionsLine := "Actions:    <Space>: Toggle | a: Toggle All | d: Delete | c: Copy | r: Refresh | q: Quit"
-		navLine := "Navigation: ↑/↓: Chats | ←/→: Tabs | f/b: PgDn/PgUp | F/B: Half | g/G: Home/End"
-		s.WriteString(helpStyle.Render(actionsLine))
+		s.WriteString(helpStyle.Render("space select │ d delete │ m group │ p preview │ ? help │ q quit"))
 		s.WriteString("\n")
-		s.WriteString(helpStyle.Render(navLine))
+		s.WriteString(helpStyle.Render("↑/↓ move │ f/b page │ g/G home/end"))
 		s.WriteString("\n")
 	} else {
-		help := "↑/↓:Chats | ←/→:Tabs | <Space>:Toggle | a:Toggle All | c:Copy ID | d:Delete | r:Refresh | f/b:PgUp/PgDn | g/G:Home/End | q/esc:Quit"
+		help := "↑/↓ move │ space select │ a all │ d delete │ m group │ p preview │ ? help │ q quit"
 		s.WriteString(helpStyle.Render(help))
 		s.WriteString("\n")
 	}
@@ -866,6 +1195,17 @@ func (m model) updateGrouped(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.confirmDelete = true
 		}
 
+	case "m":
+		// Toggle group by project (exit group mode)
+		if m.cfg != nil {
+			m.cfg.GroupByProject = false
+			m.grouped = false
+			m.groupRows = nil
+			m.cursor = 0
+			m.scrollOffset = 0
+			saveConfig(m.cfg)
+		}
+
 	case "r":
 		m.chats = findAllChats()
 		m.selected = make(map[int]bool)
@@ -875,7 +1215,27 @@ func (m model) updateGrouped(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.error = ""
 		m.deleted = 0
 		m.copiedMsg = ""
+		m.previewForUUID = ""
 		m.rebuildGroupRows()
+
+	case "e":
+		for _, chat := range m.chats {
+			m.expandedProjects[chat.Project] = true
+		}
+		m.rebuildGroupRows()
+
+	case "w":
+		m.expandedProjects = make(map[string]bool)
+		m.rebuildGroupRows()
+
+	case "p":
+		if m.cursor < rowCount && !m.groupRows[m.cursor].isHeader {
+			if !m.showPreview {
+				m.previewForUUID = ""
+				m.loadPreviewForCursor()
+				m.showPreview = true
+			}
+		}
 
 	case "c":
 		if m.cursor < rowCount && !m.groupRows[m.cursor].isHeader {
@@ -936,15 +1296,13 @@ func (m model) viewGrouped() string {
 	compact := width < compactModeWidth
 
 	// Column widths for chat rows (indented by 2 for nesting)
-	var timestampWidth, versionWidth, fixedWidth int
+	var timestampWidth, fixedWidth int
 	if compact {
 		timestampWidth = 11
-		versionWidth = 0
-		fixedWidth = 4 + 2 + timestampWidth + 5 + 5 // indicator + indent + ts + lines + gaps
+		fixedWidth = 2 + 2 + timestampWidth + 5 + 6 // indicator(2) + indent(2) + ts + lines + gaps
 	} else {
 		timestampWidth = 19
-		versionWidth = 8
-		fixedWidth = 46 // indicator(4) + indent(2) + ts(19) + version(8) + lines(5) + gaps(8)
+		fixedWidth = 36 // indicator(2) + indent(2) + ts(19) + lines(5) + gaps(8)
 	}
 
 	linesWidth := 5
@@ -962,9 +1320,10 @@ func (m model) viewGrouped() string {
 	s.WriteString(dimStyle.Render(strings.Repeat("─", width)))
 	s.WriteString("\n")
 
-	// Thin column header for grouped view
-	header := fmt.Sprintf("    %-*s", width-4, "PROJECT / CHAT")
-	s.WriteString(dimStyle.Render(header))
+	// Column headers with dark background
+	gHeaderFmt := fmt.Sprintf("     %%-*s  %%%ds  %%s", linesWidth)
+	gHeader := fmt.Sprintf(gHeaderFmt, timestampWidth, "date", "lines", "title")
+	s.WriteString(dimStyle.Render(gHeader))
 	s.WriteString("\n")
 	s.WriteString(dimStyle.Render(strings.Repeat("─", width)))
 	s.WriteString("\n")
@@ -989,37 +1348,75 @@ func (m model) viewGrouped() string {
 			if m.expandedProjects[row.project] {
 				arrow = "▾"
 			}
+			projectClean := decodeProjectPath(row.project)
+			projColor := colorForProject(row.project)
 
-			// Selection indicator for project
-			indicator := "[ ]"
-			if sel == total && total > 0 {
-				indicator = "[✓]"
-			} else if sel > 0 {
-				indicator = "[~]"
+			// Compute group stats inline
+			var totalLines int
+			var latestTs string
+			for _, c := range m.chats {
+				if c.Project == row.project {
+					totalLines += c.LineCount
+					if c.Timestamp > latestTs { latestTs = c.Timestamp }
+				}
 			}
+			latestDate := ""
+			if len(latestTs) >= 10 { latestDate = latestTs[:10] }
 
-			projectClean := strings.NewReplacer("\n", " ").Replace(row.project)
-			countInfo := dimStyle.Render(fmt.Sprintf("(%d chats, %d selected)", total, sel))
-			line := fmt.Sprintf("%s %s %s  %s", indicator, arrow, projectClean, countInfo)
-
-			// Pad to full width
-			lineWidth := lipgloss.Width(line)
-			if lineWidth < width {
-				line += strings.Repeat(" ", width-lineWidth)
-			}
-
-			style := lipgloss.NewStyle()
-			if sel > 0 && sel == total {
-				style = selectedStyle
-			}
 			if i == m.cursor {
-				style = cursorStyle
+				// Cursor row: cyan ▌ bar separately + cursor bg
+				cursorBarH := lipgloss.NewStyle().Foreground(adaptiveColor("73", "6")).Background(lipgloss.Color("#2c3d3d")).Render("▌")
+				leftPart := arrow + " " + projectClean
+				var statsStr string
+				if sel > 0 {
+					statsStr = fmt.Sprintf("%d chats  │  %d sel  │  %d lines  │  latest %s", total, sel, totalLines, latestDate)
+				} else {
+					statsStr = fmt.Sprintf("%d chats  │  %d lines  │  latest %s", total, totalLines, latestDate)
+				}
+				// leftPart excludes the ▌, so account for it in width
+				gap := (width - 1) - runewidth.StringWidth(leftPart) - runewidth.StringWidth(statsStr)
+				if gap < 2 { gap = 2 }
+				plainContent := " " + leftPart + strings.Repeat(" ", gap) + statsStr
+				contentW := runewidth.StringWidth(plainContent)
+				if contentW < width-1 {
+					plainContent += strings.Repeat(" ", width-1-contentW)
+				}
+				s.WriteString(cursorBarH + cursorStyle.Render(plainContent))
+			} else {
+				// Normal row: project-tinted background applied per-component
+				bg := bgTintForProject(row.project)
+				pBg := lipgloss.NewStyle().Foreground(projColor).Background(bg)
+				dimBg := lipgloss.NewStyle().Foreground(adaptiveColor("59", "8")).Background(bg)
+				orangeBg := lipgloss.NewStyle().Foreground(adaptiveColor("173", "11")).Background(bg)
+				selBg := lipgloss.NewStyle().Bold(true).Foreground(adaptiveColor("114", "10")).Background(bg)
+				spaceBg := lipgloss.NewStyle().Background(bg)
+
+				barStr := pBg.Render("▌")
+				arrowStr := pBg.Render(arrow)
+				projStr := pBg.Copy().Bold(true).Render(projectClean)
+				leftPart := barStr + spaceBg.Render(" ") + arrowStr + spaceBg.Render(" ") + projStr
+
+				linesTotal := fmt.Sprintf("%s lines", formatLines(totalLines))
+				var statsStr string
+				if sel > 0 {
+					statsStr = dimBg.Render(fmt.Sprintf("%d chats", total)) +
+						dimBg.Render(" │ ") + selBg.Render(fmt.Sprintf("%d sel", sel)) +
+						dimBg.Render(" │ ") + orangeBg.Render(linesTotal) +
+						dimBg.Render(" │ ") + dimBg.Render("latest "+latestDate)
+				} else {
+					statsStr = dimBg.Render(fmt.Sprintf("%d chats", total)) +
+						dimBg.Render(" │ ") + orangeBg.Render(linesTotal) +
+						dimBg.Render(" │ ") + dimBg.Render("latest "+latestDate)
+				}
+				gap := width - lipgloss.Width(leftPart) - lipgloss.Width(statsStr)
+				if gap < 2 { gap = 2 }
+				s.WriteString(leftPart + spaceBg.Render(strings.Repeat(" ", gap)) + statsStr)
 			}
-			s.WriteString(style.Render(line))
 			s.WriteString("\n")
 		} else {
 			// Chat row (indented under project)
 			chat := m.chats[row.chatIdx]
+			projColor := colorForProject(row.project)
 
 			var timestamp string
 			if compact {
@@ -1032,10 +1429,7 @@ func (m model) viewGrouped() string {
 				timestamp = runewidth.Truncate(chat.Timestamp, timestampWidth, "")
 			}
 
-			var version string
-			if versionWidth > 0 {
-				version = runewidth.Truncate(chat.Version, versionWidth-1, "")
-			}
+
 			var lines string
 			switch {
 			case chat.LineCount == 0:
@@ -1049,28 +1443,55 @@ func (m model) viewGrouped() string {
 			titleClean := strings.NewReplacer("\n", " ").Replace(chat.Title)
 			title := runewidth.Truncate(titleClean, titleWidth, "..")
 
-			indicator := "[ ]"
-			if m.selected[row.chatIdx] {
-				indicator = "[✓]"
+			noTitleG := strings.HasPrefix(chat.Title, "[No title]")
+			tPad := titleWidth - runewidth.StringWidth(title)
+			if tPad < 0 {
+				tPad = 0
 			}
-
-			var line string
-			if compact {
-				lineFmt := fmt.Sprintf("%%s  %%-*s  %%-%ds  %%-%ds", linesWidth, titleWidth)
-				line = fmt.Sprintf(lineFmt, indicator, timestampWidth, timestamp, lines, title)
-			} else {
-				lineFmt := fmt.Sprintf("%%s  %%-*s  %%-%ds  %%-%ds  %%-%ds", versionWidth, linesWidth, titleWidth)
-				line = fmt.Sprintf(lineFmt, indicator, timestampWidth, timestamp, version, lines, title)
-			}
-
-			style := lipgloss.NewStyle()
-			if m.selected[row.chatIdx] {
-				style = selectedStyle
-			}
+			// Tree connector colored in dim project color
+			treeConnector := lipgloss.NewStyle().
+				Foreground(projColor).
+				Faint(true).
+				Render("├─")
 			if i == m.cursor {
-				style = cursorStyle
+				// Cursor row: ▌ bar separately, green if selected else cyan
+				var cursorBarG string
+				if m.selected[row.chatIdx] {
+					cursorBarG = lipgloss.NewStyle().Foreground(adaptiveColor("114", "10")).Background(lipgloss.Color("#2c3d3d")).Render("▌")
+				} else {
+					cursorBarG = lipgloss.NewStyle().Foreground(adaptiveColor("73", "6")).Background(lipgloss.Color("#2c3d3d")).Render("▌")
+				}
+				plainContent := " ├─ " + fmt.Sprintf("%-*s  %*s  %-*s",
+					timestampWidth, timestamp, linesWidth, lines, titleWidth, title)
+				contentW := runewidth.StringWidth(plainContent)
+				if contentW < width-1 {
+					plainContent += strings.Repeat(" ", width-1-contentW)
+				}
+				s.WriteString(cursorBarG + cursorStyle.Render(plainContent))
+			} else {
+				// Normal row: styled parts with tree connector
+				var barG string
+				if m.selected[row.chatIdx] {
+					barG = selectedStyle.Render("▌") + " "
+				} else {
+					barG = "  "
+				}
+				tsStr := dimStyle.Render(fmt.Sprintf("%-*s", timestampWidth, timestamp))
+				var linesStr string
+				if chat.LineCount > 500 {
+					linesStr = orangeStyle.Render(fmt.Sprintf("%*s", linesWidth, lines))
+				} else {
+					linesStr = dimStyle.Render(fmt.Sprintf("%*s", linesWidth, lines))
+				}
+				var titleRenderedG string
+				if noTitleG {
+					titleRenderedG = noTitleStyle.Render(title) + strings.Repeat(" ", tPad)
+				} else {
+					titleRenderedG = title + strings.Repeat(" ", tPad)
+				}
+				line := barG + treeConnector + " " + tsStr + "  " + linesStr + "  " + titleRenderedG
+				s.WriteString(line)
 			}
-			s.WriteString(style.Render(line))
 			s.WriteString("\n")
 		}
 	}
@@ -1081,6 +1502,8 @@ func (m model) viewGrouped() string {
 		s.WriteString(dimStyle.Render(scrollInfo))
 		s.WriteString("\n")
 	}
+
+
 
 	// Bottom separator
 	s.WriteString(dimStyle.Render(strings.Repeat("─", width)))
@@ -1105,14 +1528,12 @@ func (m model) viewGrouped() string {
 		s.WriteString(helpStyle.Render("[ENTER=Yes] [ESC=No]"))
 		s.WriteString("\n")
 	} else if compact {
-		actionsLine := "Actions:    <Space>: Toggle | Enter: Expand | a: Toggle All | d: Delete | c: Copy | r: Refresh | q: Quit"
-		navLine := "Navigation: ↑/↓: Items | ←/→: Tabs | f/b: PgDn/PgUp | F/B: Half | g/G: Home/End"
-		s.WriteString(helpStyle.Render(actionsLine))
+		s.WriteString(helpStyle.Render("space select │ enter expand │ d delete │ p preview │ ? help │ q quit"))
 		s.WriteString("\n")
-		s.WriteString(helpStyle.Render(navLine))
+		s.WriteString(helpStyle.Render("↑/↓ move │ f/b page │ g/G home/end"))
 		s.WriteString("\n")
 	} else {
-		help := "↑/↓:Items | ←/→:Tabs | Enter:Expand | <Space>:Toggle | a:Toggle All | c:Copy ID | d:Delete | r:Refresh | q/esc:Quit"
+		help := "↑/↓ move │ enter expand │ space select │ a all │ d delete │ m ungroup │ p preview │ ? help │ q quit"
 		s.WriteString(helpStyle.Render(help))
 		s.WriteString("\n")
 	}

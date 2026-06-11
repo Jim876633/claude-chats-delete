@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/charmbracelet/glamour"
 )
 
 func findAllChats() []Chat {
@@ -447,6 +449,186 @@ func parseAgentIDs(chatFile string) []string {
 	}
 
 	return agentIDs
+}
+
+// toolSummary returns a human-readable summary of a tool call.
+// For Bash it shows the command; for file tools it shows the path; otherwise just the name.
+func toolSummary(name string, input json.RawMessage) string {
+	var inp map[string]json.RawMessage
+	if err := json.Unmarshal(input, &inp); err != nil {
+		return name
+	}
+	getString := func(key string) string {
+		raw, ok := inp[key]
+		if !ok {
+			return ""
+		}
+		var s string
+		if err := json.Unmarshal(raw, &s); err != nil {
+			return ""
+		}
+		return s
+	}
+	switch name {
+	case "Bash":
+		if cmd := getString("command"); cmd != "" {
+			return "$ " + cmd
+		}
+	case "Read":
+		if p := getString("file_path"); p != "" {
+			return "Read " + p
+		}
+	case "Edit", "Write", "NotebookEdit":
+		if p := getString("file_path"); p != "" {
+			return name + " " + p
+		}
+	case "WebFetch":
+		if u := getString("url"); u != "" {
+			return "Fetch " + u
+		}
+	case "WebSearch":
+		if q := getString("query"); q != "" {
+			return "Search " + q
+		}
+	}
+	return name
+}
+
+// loadRawPreviewMsgs reads raw messages from a chat JSONL file.
+// Returns PreviewMessage items (one per message block) without splitting on newlines.
+// Stops after collecting max messages or scanning 300 raw lines for performance.
+func loadRawPreviewMsgs(path string, max int) []PreviewMessage {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	buf := make([]byte, 1024*1024)
+	scanner.Buffer(buf, len(buf))
+
+	var result []PreviewMessage
+	scanned := 0
+	for scanner.Scan() && len(result) < max {
+		scanned++
+		if scanned > 300 {
+			break
+		}
+
+		var msg struct {
+			Type    string `json:"type"`
+			IsMeta  bool   `json:"isMeta"`
+			Message struct {
+				Content json.RawMessage `json:"content"`
+			} `json:"message"`
+		}
+		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
+			continue
+		}
+		if msg.IsMeta || len(msg.Message.Content) == 0 {
+			continue
+		}
+
+		switch msg.Type {
+		case "user":
+			var text string
+			if err := json.Unmarshal(msg.Message.Content, &text); err != nil {
+				continue
+			}
+			text = cleanSystemTags(text)
+			if text == "" {
+				continue
+			}
+			result = append(result, PreviewMessage{Role: "user", Text: text})
+
+		case "assistant":
+			var blocks []struct {
+				Type  string          `json:"type"`
+				Text  string          `json:"text"`
+				Name  string          `json:"name"`
+				Input json.RawMessage `json:"input"`
+			}
+			if err := json.Unmarshal(msg.Message.Content, &blocks); err != nil {
+				var text string
+				if err2 := json.Unmarshal(msg.Message.Content, &text); err2 == nil && text != "" {
+					result = append(result, PreviewMessage{Role: "asst", Text: text})
+				}
+				continue
+			}
+			for _, b := range blocks {
+				if len(result) >= max {
+					break
+				}
+				switch b.Type {
+				case "text":
+					if b.Text != "" {
+						result = append(result, PreviewMessage{Role: "asst", Text: b.Text})
+					}
+				case "tool_use":
+					if b.Name != "" {
+						result = append(result, PreviewMessage{Role: "tool", Text: toolSummary(b.Name, b.Input)})
+					}
+				}
+			}
+		}
+	}
+	return result
+}
+
+// renderPreviewMessages renders []PreviewMessage into display rows using glamour for markdown.
+// textWidth is the available content width (excluding role prefix).
+func renderPreviewMessages(msgs []PreviewMessage, textWidth int) []PreviewLine {
+	if textWidth < 10 {
+		textWidth = 10
+	}
+	r, err := glamour.NewTermRenderer(
+		glamour.WithStandardStyle("dark"),
+		glamour.WithWordWrap(textWidth),
+	)
+	if err != nil {
+		r = nil
+	}
+
+	var result []PreviewLine
+	for i, pm := range msgs {
+		// Insert blank separator line between different speakers
+		if i > 0 && msgs[i-1].Role != pm.Role {
+			result = append(result, PreviewLine{Role: pm.Role, Text: "", IsFirst: false})
+		}
+
+		if pm.Role == "tool" || r == nil {
+			// Tool messages and fallback: plain text, split on newlines
+			lines := strings.Split(strings.ReplaceAll(pm.Text, "\r\n", "\n"), "\n")
+			for j, line := range lines {
+				result = append(result, PreviewLine{Role: pm.Role, Text: line, IsFirst: j == 0})
+			}
+			continue
+		}
+
+		// Render markdown through glamour
+		rendered, err := r.Render(pm.Text)
+		if err != nil {
+			rendered = pm.Text
+		}
+		// Trim glamour's leading/trailing blank lines
+		rendered = strings.TrimRight(rendered, "\n ")
+		if len(rendered) > 0 && rendered[0] == '\n' {
+			rendered = rendered[1:]
+		}
+		lines := strings.Split(rendered, "\n")
+		// Collapse consecutive blank lines
+		lastBlank := false
+		for j, line := range lines {
+			isBlank := strings.TrimSpace(line) == ""
+			if isBlank && lastBlank {
+				continue
+			}
+			result = append(result, PreviewLine{Role: pm.Role, Text: line, IsFirst: j == 0})
+			lastBlank = isBlank
+		}
+	}
+	return result
 }
 
 // deleteChats deletes all files related to the given chats and updates sessions index.

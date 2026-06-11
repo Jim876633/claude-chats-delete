@@ -2,7 +2,9 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 
@@ -26,48 +28,81 @@ func truncateLeft(s string, maxWidth int) string {
 	return ".."
 }
 
-// justifyItems distributes items evenly across totalWidth.
-// prefix is printed as-is before the items (e.g. "Actions:    ").
-// Items are separated by " | " stretched to fill the remaining width.
-func justifyItems(prefix string, items []string, totalWidth int) string {
-	prefixWidth := runewidth.StringWidth(prefix)
-	available := totalWidth - prefixWidth
-
-	if len(items) <= 1 {
-		return prefix + strings.Join(items, "")
+// decodeProjectPath converts a Claude Code encoded project name back to a
+// human-readable path. Claude Code encodes by replacing '/' and any non-[a-zA-Z0-9-]
+// character (including dots, Chinese chars, spaces) with '-'.
+// We resolve ambiguity by matching against the actual filesystem.
+func decodeProjectPath(encoded string) string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return encoded
 	}
 
-	// Calculate total content width with minimum separators " | "
-	contentWidth := 0
-	for _, item := range items {
-		contentWidth += runewidth.StringWidth(item)
-	}
-	minSepWidth := 3 // " | "
-	gaps := len(items) - 1
-	extra := available - contentWidth - minSepWidth*gaps
-	if extra < 0 {
-		extra = 0
+	// Build the encoded form of the home dir (strip leading /)
+	encodedHome := encodePathComponent(home[1:])
+	prefix := "-" + encodedHome
+	if !strings.HasPrefix(encoded, prefix) {
+		return encoded
 	}
 
-	// Distribute extra spaces: each gap gets base + 1 for the first `rem` gaps
-	base := extra / gaps
-	rem := extra % gaps
+	suffix := encoded[len(prefix):]
+	actual := resolveEncodedSuffix(home, suffix)
+	if actual == "" {
+		// Fallback: strip home prefix, naive replacement
+		return "~" + strings.ReplaceAll(suffix, "-", "/")
+	}
+	return "~" + actual[len(home):]
+}
 
+// encodePathComponent mirrors Claude Code's encoding: only [a-zA-Z0-9-] pass through,
+// everything else (slashes, dots, non-ASCII) becomes '-'.
+func encodePathComponent(s string) string {
 	var sb strings.Builder
-	sb.WriteString(prefix)
-	for i, item := range items {
-		sb.WriteString(item)
-		if i < gaps {
-			extra := base
-			if i < rem {
-				extra = base + 1
-			}
-			left := extra / 2
-			right := extra - left
-			sb.WriteString(" " + strings.Repeat(" ", left) + "|" + strings.Repeat(" ", right) + " ")
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' {
+			sb.WriteRune(r)
+		} else {
+			sb.WriteRune('-')
 		}
 	}
 	return sb.String()
+}
+
+// resolveEncodedSuffix walks the filesystem starting at base, matching the
+// encoded suffix against actual directory entries to reconstruct the real path.
+func resolveEncodedSuffix(base, suffix string) string {
+	if suffix == "" {
+		return base
+	}
+	if suffix[0] != '-' {
+		return ""
+	}
+
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		return ""
+	}
+
+	rest := suffix[1:] // strip leading path-separator dash
+
+	for _, entry := range entries {
+		encodedName := encodePathComponent(entry.Name())
+		if !strings.HasPrefix(rest, encodedName) {
+			continue
+		}
+		after := rest[len(encodedName):]
+		fullPath := filepath.Join(base, entry.Name())
+		if after == "" {
+			return fullPath
+		}
+		if after[0] == '-' {
+			if result := resolveEncodedSuffix(fullPath, after); result != "" {
+				return result
+			}
+		}
+	}
+
+	return ""
 }
 
 func copyToClipboard(text string) error {

@@ -11,11 +11,21 @@ import (
 
 // Config stores application configuration
 type Config struct {
-	ClaudeDir              string `json:"claude_dir"`
-	AutoUpdates            bool   `json:"auto_updates"`
-	GroupByProject         bool   `json:"group_by_project"`
-	LastUpdateCheck        int64  `json:"last_update_check"`
-	UpdateCheckIntervalHrs int    `json:"update_check_interval_hours"`
+	ClaudeDir      string `json:"claude_dir"`
+	GroupByProject bool   `json:"group_by_project"`
+}
+
+// PreviewMessage is one raw chat message loaded from JSONL before rendering.
+type PreviewMessage struct {
+	Role string // "user", "asst", "tool"
+	Text string
+}
+
+// PreviewLine is one rendered screen row shown in the preview modal.
+type PreviewLine struct {
+	Role    string // "user", "asst", "tool"
+	Text    string
+	IsFirst bool // true = first line of a message (show role label), false = continuation
 }
 
 // Chat represents a single chat session
