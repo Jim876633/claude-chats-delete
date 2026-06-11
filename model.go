@@ -955,7 +955,7 @@ func (m model) View() string {
 
 		titleClean := strings.NewReplacer("\n", " ").Replace(chat.Title)
 		title := runewidth.Truncate(titleClean, titleWidth, "..")
-		projectClean := decodeProjectPath(chat.Project)
+		projectClean := strings.ReplaceAll(decodeProjectPath(chat.Project), "\n", " ")
 		project := truncateLeft(projectClean, projectWidth-2)
 
 		titlePad := titleWidth - runewidth.StringWidth(title)
@@ -1317,8 +1317,6 @@ func (m model) viewGrouped() string {
 	// Header
 	s.WriteString(m.renderTabBar())
 	s.WriteString("\n")
-	s.WriteString(dimStyle.Render(strings.Repeat("─", width)))
-	s.WriteString("\n")
 
 	// Column headers with dark background
 	gHeaderFmt := fmt.Sprintf("     %%-*s  %%%ds  %%s", linesWidth)
@@ -1348,7 +1346,7 @@ func (m model) viewGrouped() string {
 			if m.expandedProjects[row.project] {
 				arrow = "▾"
 			}
-			projectClean := decodeProjectPath(row.project)
+			projectClean := strings.ReplaceAll(decodeProjectPath(row.project), "\n", " ")
 			projColor := colorForProject(row.project)
 
 			// Compute group stats inline

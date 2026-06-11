@@ -55,7 +55,7 @@ func makeTestChats(n int) []Chat {
 // Layout constants — update these if the View() layout changes.
 // If a test fails, it means View() gained or lost a fixed line.
 const (
-	fixedHeaderLines        = 4 // tabbar(+stats) + top-separator + col-headers + separator
+	fixedHeaderLines        = 3 // tabbar(+stats) + col-headers + separator
 	fixedFooterLines        = 2 // bottom-separator + help (OR confirmation, same count)
 	fixedFooterLinesCompact = 3 // bottom-separator + 2 help lines (actions + navigation)
 
