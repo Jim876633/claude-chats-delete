@@ -1,84 +1,72 @@
-# Keyboard Shortcuts Guide
+# Keyboard Shortcuts
 
-Complete reference for all keyboard shortcuts in Claude Code Chat Manager.
+> You can also press `?` inside the TUI to open this reference as an overlay.
 
-## Navigation Commands
+## Navigation
 
-### Basic Navigation
-- **`↑` (Up Arrow)** or **`k`** - Move cursor up one item
-- **`↓` (Down Arrow)** or **`j`** - Move cursor down one item
+| Key | Action |
+|-----|--------|
+| `↑` / `k` | Move cursor up |
+| `↓` / `j` | Move cursor down |
+| `f` / `PgDn` | Page down |
+| `b` / `PgUp` | Page up |
+| `F` | Half-page down |
+| `B` | Half-page up |
+| `g` / `Home` | Jump to top |
+| `G` / `End` | Jump to bottom |
 
-### Fast Scrolling
-For users with large chat histories (hundreds of sessions):
+## Selection
 
-- **`f`** or **`PgDn`** - Scroll down by one page
-- **`b`** or **`PgUp`** - Scroll up by one page
-- **`F`** - Scroll down by half page
-- **`B`** - Scroll up by half page
+| Key | Action |
+|-----|--------|
+| `Space` | Toggle selection for current item |
+| `a` | Select / deselect all |
 
-### Jump Navigation
-- **`g`** or **`Home`** - Jump to first chat (top of list)
-- **`G`** or **`End`** - Jump to last chat (bottom of list)
+## Actions
 
-## Selection Commands
+| Key | Action |
+|-----|--------|
+| `d` | Delete selected chats (auto-selects cursor item if nothing selected). In grouped view, pressing `d` on a project header auto-selects every chat in that project. |
+| `p` | Open preview modal for the chat under cursor |
+| `c` | Copy current chat UUID to clipboard |
+| `r` | Refresh chat list (reload from disk) |
+| `m` | Toggle grouped-by-project mode |
+| `?` | Show keyboard shortcut overlay |
+| `q` / `Ctrl+C` | Quit |
 
-- **`<Space>`** - Toggle selection for current chat
-- **`a`** - Toggle select/deselect all chats
+## Grouped Mode
 
-## Action Commands
+| Key | Action |
+|-----|--------|
+| `Enter` | Expand / collapse project |
+| `e` | Expand all projects |
+| `w` | Collapse all projects |
 
-- **`c`** - Copy current chat UUID to clipboard
-- **`d`** - Delete selected chats; if nothing is selected, the chat under the
-  cursor is auto-selected for this single action. In grouped view, pressing
-  `d` on a project header auto-selects every chat in that project.
-- **`r`** - Refresh chat list (reload from disk)
-- **`q`** or **`Ctrl+C`** - Quit application
+## Delete Confirmation
 
-## Confirmation Dialog
+| Key | Action |
+|-----|--------|
+| `Enter` | Confirm deletion |
+| `Esc` / `n` | Cancel (auto-selections made by `d` are reverted; explicit `Space` selections are preserved) |
 
-When deleting (after pressing `d`):
-- **`ENTER`** - Confirm deletion
-- **`ESC`** or **`n`** - Cancel deletion (if the selection was made
-  automatically by `d`, it is reverted so the next `d` acts on the new cursor
-  position; explicit `Space` selections are preserved)
+## Preview Modal
 
-## Tips for Power Users
+| Key | Action |
+|-----|--------|
+| `↑/↓` `k/j` | Scroll content |
+| `f/b` | Page down / up |
+| `g/G` | Jump to top / bottom |
+| Any other key | Close preview |
 
-### Working with Large Chat Histories
+## Bulk Delete Workflow
 
-If you have hundreds of chat sessions:
-
-1. **Quick Jump to Recent/Old Chats**
-   - Press `g` to jump to first chat
-   - Press `G` to jump to last chat
-
-2. **Fast Scanning**
-   - Use `f`/`b` to quickly scan through pages
-   - Use `F`/`B` for half-page movements
-
-3. **Bulk Selection Workflow**
-   - Press `a` to select all chats
-   - Use `<Space>` to deselect individual chats you want to keep
-   - Press `d` to delete selection
-
-### Vim Users
-
-All standard vim navigation keys are supported:
-- `j`/`k` - Line movement
-- `f`/`b` - Full page scroll
-- `F`/`B` - Half page scroll
-- `g`/`G` - Jump to top/bottom
+1. Press `a` to select all chats.
+2. Use `Space` to deselect chats you want to keep.
+3. Press `d` then `Enter` to delete.
 
 ## Scroll Indicator
 
-When the chat list is longer than the visible area, a scroll indicator appears at the bottom showing:
+When the list is longer than the visible area, a scroll indicator shows:
 ```
 [1-20/150]
 ```
-This means you're viewing items 1-20 out of 150 total chats.
-
-## Performance Notes
-
-- Page scrolling automatically adapts to your terminal height
-- Minimum page size is 10 items (for very small terminals)
-- All navigation commands work instantly regardless of chat count

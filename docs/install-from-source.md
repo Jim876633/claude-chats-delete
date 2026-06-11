@@ -2,38 +2,26 @@
 
 ## Requirements
 
-- Go 1.21 or later
+- Go 1.24 or later
 - git
+- make
 
 ## Steps
 
 ```bash
-# Clone the repository
-git clone https://github.com/ataleckij/claude-chats-delete.git
+git clone https://github.com/Jim876633/claude-chats-delete.git
 cd claude-chats-delete
 
-# Build
-go build -o claude-chats
-
-# Install to ~/.local/bin
-mkdir -p ~/.local/bin
-mv claude-chats ~/.local/bin/
+# Build and install to ~/.local/bin/c
+make install
 
 # Make sure ~/.local/bin is in your PATH
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-## Cross-compilation
-
-Build for different platforms:
+## Other targets
 
 ```bash
-# macOS ARM (M1/M2/M3)
-GOOS=darwin GOARCH=arm64 go build -o claude-chats-darwin-arm64
-
-# macOS Intel
-GOOS=darwin GOARCH=amd64 go build -o claude-chats-darwin-amd64
-
-# Linux x86_64
-GOOS=linux GOARCH=amd64 go build -o claude-chats-linux-amd64
+make build     # build binary to ./c (without installing)
+make uninstall # remove ~/.local/bin/c
 ```

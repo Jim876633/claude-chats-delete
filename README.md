@@ -1,82 +1,85 @@
 # Claude Code Chats Delete TUI
 
-**Delete and remove Claude Code chat sessions** with an interactive terminal UI.
+**Browse and delete Claude Code chat sessions** with an interactive terminal UI.
 
-[YouTube Presentation](https://youtu.be/FFmKh5kCyuE)
+Forked from [ataleckij/claude-chats-delete](https://github.com/ataleckij/claude-chats-delete).
 
-Browse, select, and bulk delete chat histories stored in `~/.claude` directory.
-
-Tested with Claude Code **v2.1.172**.
+Browse, select, and bulk delete chat histories stored in your `~/.claude` directory.
 
 <img src="./demo.gif" />
 
 ## Features
 
-- Browse chat sessions across all projects, with optional grouped-by-project view
+- Browse chat sessions across all projects
+- Toggle grouped-by-project view with collapsible project headers
+- Preview chat content in a modal overlay
 - Bulk delete with full on-disk cleanup (subagents, tool-results, file-history, todos, tasks, plans, agent memory, and more)
 - Copy chat UUID to clipboard
+- Full keyboard shortcut reference overlay (`?`)
 - Keyboard-driven interface with vim keys and fast page navigation
-- Auto-update via GitHub releases
 
 ## Installation
 
-### Quick Install
-
-```bash
-curl -sSL https://raw.githubusercontent.com/ataleckij/claude-chats-delete/main/install.sh | sh
-```
-
-This will:
-- Detect your platform (Linux/macOS, x64/ARM)
-- Download the latest release binary
-- Verify checksum (SHA256)
-- Install to `~/.local/bin/claude-chats`
-
-**Requirements:** curl or wget (usually pre-installed on Linux/macOS)
-
 ### Build from Source
 
-See [docs/install-from-source.md](docs/install-from-source.md) for manual build instructions (requires Go 1.21+).
+Requires Go 1.24+.
+
+```bash
+git clone https://github.com/Jim876633/claude-chats-delete.git
+cd claude-chats-delete
+make install
+```
+
+This builds the binary as `c` and installs it to `~/.local/bin/c`.
+
+Make sure `~/.local/bin` is in your `PATH`:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+### Other make targets
+
+```bash
+make build     # build binary to ./c
+make uninstall # remove ~/.local/bin/c
+```
 
 ## Usage
 
 ```bash
-claude-chats
+c
 ```
 
-### Keyboard Controls
+On first run you'll be prompted to specify your Claude directory. Configuration is saved to `~/.config/claude-chats/config.json`.
+
+### Keyboard Shortcuts
 
 | Key | Action |
 |-----|--------|
-| `SPACE` | Select/deselect current chat |
-| `a` | Select/deselect all chats |
+| `↑/↓` `k/j` | Move cursor |
+| `f/b` | Page down / up |
+| `F/B` | Half-page down / up |
+| `g/G` | Jump to top / bottom |
+| `Space` | Select / deselect current item |
+| `a` | Select / deselect all |
+| `d` | Delete selected (auto-selects cursor item if nothing selected) |
+| `p` | Preview chat content |
 | `c` | Copy chat UUID to clipboard |
-| `d` | Delete selected chats, or the chat under cursor if none are selected (with confirmation) |
 | `r` | Refresh chat list |
-| `q` or `Ctrl+C` | Quit |
-| `↑/↓`, `k/j`, `f/b`, `F/B`, `g/G` | Navigate (arrows, vim keys, page, half-page, home/end) |
+| `m` | Toggle grouped-by-project mode |
+| `?` | Show full keyboard shortcut reference |
+| `q` / `Ctrl+C` | Quit |
 
-See [docs/keyboard-shortcuts.md](docs/keyboard-shortcuts.md) for the full keybinding reference and tips for large chat histories, and [docs/deletion-behavior.md](docs/deletion-behavior.md) for what gets deleted per chat.
+**Grouped mode only:**
 
-## Updates
+| Key | Action |
+|-----|--------|
+| `Enter` | Expand / collapse project |
+| `e` | Expand all projects |
+| `w` | Collapse all projects |
 
-The tool checks for updates on startup (once per hour) and prompts you to install when a new version is available. Toggle auto-updates from the **Settings** tab (press `→`), or run `claude-chats --update` for a manual check / `--version` to see the current version.
-
-To disable auto-updates without opening the TUI, set `CLAUDE_CHATS_DISABLE_AUTOUPDATER=1` in your environment.
-
-## Configuration
-
-On first run, you'll be prompted to specify your Claude directory. Configuration is saved to `~/.config/claude-chats/config.json`.
-
-## Star History
-
-<a href="https://www.star-history.com/?repos=ataleckij%2Fclaude-chats-delete&type=date&legend=top-left">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=ataleckij/claude-chats-delete&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=ataleckij/claude-chats-delete&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=ataleckij/claude-chats-delete&type=date&legend=top-left" />
- </picture>
-</a>
+See [docs/deletion-behavior.md](docs/deletion-behavior.md) for what gets deleted per chat.
 
 ## License
 
