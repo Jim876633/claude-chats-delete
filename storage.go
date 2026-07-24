@@ -6,20 +6,28 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 
 	"github.com/charmbracelet/glamour"
+	"golang.org/x/sync/errgroup"
 )
 
-func findAllChats() []Chat {
-	var chats []Chat
+// chatFileRef identifies a single jsonl file pending metadata scan.
+type chatFileRef struct {
+	path    string
+	uuid    string
+	project string
+}
 
+func findAllChats() []Chat {
 	entries, err := os.ReadDir(projectsDir)
 	if err != nil {
-		return chats
+		return nil
 	}
 
+	var refs []chatFileRef
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
@@ -27,19 +35,6 @@ func findAllChats() []Chat {
 
 		projectPath := filepath.Join(projectsDir, entry.Name())
 
-		// TODO: Build a map of UUID -> messageCount from sessions-index.json if it exists
-		// messageCountMap := make(map[string]int)
-		// indexPath := filepath.Join(projectPath, "sessions-index.json")
-		// if data, err := os.ReadFile(indexPath); err == nil {
-		// 	var index SessionsIndex
-		// 	if err := json.Unmarshal(data, &index); err == nil {
-		// 		for _, sessionEntry := range index.Entries {
-		// 			messageCountMap[sessionEntry.SessionID] = sessionEntry.MessageCount
-		// 		}
-		// 	}
-		// }
-
-		// Scan all JSONL files (original behavior)
 		files, err := filepath.Glob(filepath.Join(projectPath, "*.jsonl"))
 		if err != nil {
 			continue
@@ -54,25 +49,34 @@ func findAllChats() []Chat {
 				continue
 			}
 
-			title, version, forkParentID, lineCount := scanChatMetadata(file)
-			timestamp := getChatTimestamp(file)
-
-			// TODO: Get messageCount from index if available
-			// msgCount := messageCountMap[uuid]
-
-			chats = append(chats, Chat{
-				UUID:      uuid,
-				Title:     title,
-				Timestamp: timestamp,
-				Project:   entry.Name(),
-				Version:   version,
-				// MessageCount: msgCount,
-				LineCount:    lineCount,
-				Path:         file,
-				ForkParentID: forkParentID,
-			})
+			refs = append(refs, chatFileRef{path: file, uuid: uuid, project: entry.Name()})
 		}
 	}
+
+	// Each ref is scanned independently (its own file handle, its own result
+	// slot), so the scans can run concurrently and only need to be bounded to
+	// avoid exhausting file descriptors on large history directories.
+	chats := make([]Chat, len(refs))
+	g := new(errgroup.Group)
+	g.SetLimit(runtime.NumCPU())
+	for i, ref := range refs {
+		i, ref := i, ref
+		g.Go(func() error {
+			title, version, forkParentID, lineCount := scanChatMetadata(ref.path)
+			chats[i] = Chat{
+				UUID:         ref.uuid,
+				Title:        title,
+				Timestamp:    getChatTimestamp(ref.path),
+				Project:      ref.project,
+				Version:      version,
+				LineCount:    lineCount,
+				Path:         ref.path,
+				ForkParentID: forkParentID,
+			}
+			return nil
+		})
+	}
+	g.Wait()
 
 	// Sort by timestamp (newest first)
 	sort.Slice(chats, func(i, j int) bool {

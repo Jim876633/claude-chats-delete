@@ -130,6 +130,10 @@ type deleteCompleteMsg struct {
 	count int
 }
 
+type chatsLoadedMsg struct {
+	chats []Chat
+}
+
 type errMsg string
 
 type clearCopiedMsg struct {
@@ -186,21 +190,29 @@ type model struct {
 	previewAllLines     []PreviewLine
 	previewScrollOffset int
 	previewForUUID      string
+
+	// True while chats are being scanned from disk in the background.
+	loading bool
 }
 
 func initialModel(cfg *Config) model {
 	grouped := cfg != nil && cfg.GroupByProject
 	m := model{
 		cfg:              cfg,
-		chats:            findAllChats(),
 		selected:         make(map[int]bool),
 		grouped:          grouped,
 		expandedProjects: make(map[string]bool),
-	}
-	if m.grouped {
-		m.rebuildGroupRows()
+		loading:          true,
 	}
 	return m
+}
+
+// loadChatsCmd scans the chat history in the background so the TUI can render
+// immediately instead of blocking on disk I/O before the first frame.
+func loadChatsCmd() tea.Cmd {
+	return func() tea.Msg {
+		return chatsLoadedMsg{chats: findAllChats()}
+	}
 }
 
 // rebuildGroupRows creates the virtual row list from chats grouped by project.
@@ -311,11 +323,19 @@ func (m model) visibleHeight() int {
 }
 
 func (m model) Init() tea.Cmd {
-	return nil
+	return loadChatsCmd()
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case chatsLoadedMsg:
+		m.chats = msg.chats
+		m.loading = false
+		if m.grouped {
+			m.rebuildGroupRows()
+		}
+		return m, nil
+
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -863,7 +883,7 @@ func (m model) View() string {
 		return m.viewGrouped()
 	}
 
-	if len(m.chats) == 0 {
+	if len(m.chats) == 0 && !m.loading {
 		return activeTabStyle.Render("No chats found.") + "\n\nPress q to quit.\n"
 	}
 
@@ -923,6 +943,10 @@ func (m model) View() string {
 		end = len(m.chats)
 	}
 
+	if m.loading {
+		s.WriteString(dimStyle.Render("  Loading chats..."))
+		s.WriteString("\n")
+	}
 	for i := start; i < end; i++ {
 		chat := m.chats[i]
 
@@ -1284,7 +1308,7 @@ func (m model) selectedCountForProject(project string) (selected, total int) {
 }
 
 func (m model) viewGrouped() string {
-	if len(m.chats) == 0 {
+	if len(m.chats) == 0 && !m.loading {
 		return activeTabStyle.Render("No chats found.") + "\n\nPress q to quit.\n"
 	}
 
@@ -1336,6 +1360,10 @@ func (m model) viewGrouped() string {
 		end = rowCount
 	}
 
+	if m.loading {
+		s.WriteString(dimStyle.Render("  Loading chats..."))
+		s.WriteString("\n")
+	}
 	for i := start; i < end; i++ {
 		row := m.groupRows[i]
 
