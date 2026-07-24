@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -40,8 +41,29 @@ func main() {
 
 	// Run TUI
 	p := tea.NewProgram(initialModel(config), tea.WithAltScreen())
-	if _, err := p.Run(); err != nil {
+	finalModel, err := p.Run()
+	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 		os.Exit(1)
+	}
+
+	// If the user chose to resume a chat, hand off to `claude -r` in that
+	// chat's project directory after the TUI has torn down the alt screen.
+	if m, ok := finalModel.(model); ok && m.resumeUUID != "" {
+		resumeChat(m.resumeDir, m.resumeUUID)
+	}
+}
+
+// resumeChat launches `claude -r <uuid>` with the working directory set to the
+// chat's project folder, replacing the TUI with an interactive Claude session.
+func resumeChat(dir, uuid string) {
+	cmd := exec.Command("claude", "-r", uuid)
+	cmd.Dir = dir
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Printf("Could not launch claude: %v\n", err)
+		fmt.Printf("Resume manually with:\n  cd %s && claude -r %s\n", dir, uuid)
 	}
 }

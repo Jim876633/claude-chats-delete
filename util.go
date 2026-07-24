@@ -54,6 +54,23 @@ func decodeProjectPath(encoded string) string {
 	return "~" + actual[len(home):]
 }
 
+// resolveProjectDir returns the real absolute directory for an encoded project
+// name by matching against the filesystem, or "" if it can't be resolved
+// (e.g. the project directory no longer exists). Used to chdir before resuming.
+func resolveProjectDir(encoded string) string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	encodedHome := encodePathComponent(home[1:])
+	prefix := "-" + encodedHome
+	if !strings.HasPrefix(encoded, prefix) {
+		return ""
+	}
+	suffix := encoded[len(prefix):]
+	return resolveEncodedSuffix(home, suffix)
+}
+
 // encodePathComponent mirrors Claude Code's encoding: only [a-zA-Z0-9-] pass through,
 // everything else (slashes, dots, non-ASCII) becomes '-'.
 func encodePathComponent(s string) string {

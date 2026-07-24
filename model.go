@@ -159,6 +159,12 @@ type model struct {
 	selected      map[int]bool
 	confirmDelete bool
 	deleting      bool
+
+	// Resume flow: first enter on a chat arms confirmResume and records the
+	// target; a second enter quits the TUI so main can launch `claude -r`.
+	confirmResume bool
+	resumeUUID    string
+	resumeDir     string
 	deleted       int
 	error         string
 	width         int
@@ -270,6 +276,23 @@ func (m *model) loadPreviewForCursor() {
 	m.previewAllLines = renderPreviewMessages(m.previewRawMsgs, textWidth)
 	m.previewScrollOffset = 0
 	m.previewForUUID = chatUUID
+}
+
+// armResume sets up the resume confirmation for a chat. If the project
+// directory can't be resolved on disk, it surfaces an error instead so we
+// never chdir into a missing path.
+func (m *model) armResume(c Chat) {
+	dir := resolveProjectDir(c.Project)
+	if dir == "" {
+		m.error = "Cannot resume: project directory not found on disk"
+		return
+	}
+	m.confirmResume = true
+	m.resumeUUID = c.UUID
+	m.resumeDir = dir
+	m.error = ""
+	m.copiedMsg = ""
+	m.deleted = 0
 }
 
 // chatIndicesForProject returns all chat indices belonging to a project.
@@ -405,6 +428,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// Resume confirmation: a second enter launches, esc/n cancels.
+		if m.confirmResume {
+			switch msg.String() {
+			case "enter":
+				// resumeUUID/resumeDir are already set; quitting hands off to
+				// main, which chdirs and runs `claude -r`.
+				return m, tea.Quit
+			case "esc", "n":
+				m.confirmResume = false
+				m.resumeUUID = ""
+				m.resumeDir = ""
+			}
+			return m, nil
+		}
+
 		// Global keys
 		switch msg.String() {
 		case "ctrl+c", "q", "esc":
@@ -421,6 +459,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Chats tab normal mode
 		switch msg.String() {
+
+		case "enter":
+			if m.cursor < len(m.chats) {
+				m.armResume(m.chats[m.cursor])
+			}
 
 		case "up", "k":
 			if m.cursor > 0 {
@@ -814,6 +857,7 @@ func (m model) viewHelp() string {
 		{
 			title: "View",
 			rows: [][2]string{
+				{"enter", "resume chat in its folder"},
 				{"m", "toggle group by project"},
 				{"p", "preview chat"},
 				{"r", "refresh chat list"},
@@ -823,7 +867,7 @@ func (m model) viewHelp() string {
 		{
 			title: "Grouped mode",
 			rows: [][2]string{
-				{"enter", "expand / collapse project"},
+				{"enter", "expand/collapse header · resume chat"},
 				{"e", "expand all projects"},
 				{"w", "collapse all projects"},
 			},
@@ -1065,13 +1109,18 @@ func (m model) View() string {
 		s.WriteString(" ")
 		s.WriteString(helpStyle.Render("[ENTER=Yes] [ESC=No]"))
 		s.WriteString("\n")
+	} else if m.confirmResume {
+		s.WriteString(accentStyle.Render("Resume this chat in its folder?"))
+		s.WriteString(" ")
+		s.WriteString(helpStyle.Render("[ENTER=Yes] [ESC=No]"))
+		s.WriteString("\n")
 	} else if compact {
 		s.WriteString(helpStyle.Render("space select │ d delete │ m group │ p preview │ ? help │ q quit"))
 		s.WriteString("\n")
 		s.WriteString(helpStyle.Render("↑/↓ move │ f/b page │ g/G home/end"))
 		s.WriteString("\n")
 	} else {
-		help := "↑/↓ move │ space select │ a all │ d delete │ m group │ p preview │ ? help │ q quit"
+		help := "↑/↓ move │ enter resume │ space select │ d delete │ m group │ p preview │ ? help │ q quit"
 		s.WriteString(helpStyle.Render(help))
 		s.WriteString("\n")
 	}
@@ -1136,19 +1185,25 @@ func (m model) updateGrouped(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.adjustScrollGrouped()
 
 	case "enter":
-		// Expand/collapse project header
-		if m.cursor < rowCount && m.groupRows[m.cursor].isHeader {
-			proj := m.groupRows[m.cursor].project
-			m.expandedProjects[proj] = !m.expandedProjects[proj]
-			m.rebuildGroupRows()
-			// Keep cursor on the same header
-			for i, row := range m.groupRows {
-				if row.isHeader && row.project == proj {
-					m.cursor = i
-					break
+		if m.cursor < rowCount {
+			row := m.groupRows[m.cursor]
+			if row.isHeader {
+				// Expand/collapse project header
+				proj := row.project
+				m.expandedProjects[proj] = !m.expandedProjects[proj]
+				m.rebuildGroupRows()
+				// Keep cursor on the same header
+				for i, r := range m.groupRows {
+					if r.isHeader && r.project == proj {
+						m.cursor = i
+						break
+					}
 				}
+				m.adjustScrollGrouped()
+			} else if row.chatIdx < len(m.chats) {
+				// Chat row: arm resume confirmation
+				m.armResume(m.chats[row.chatIdx])
 			}
-			m.adjustScrollGrouped()
 		}
 
 	case " ":
@@ -1553,13 +1608,18 @@ func (m model) viewGrouped() string {
 		s.WriteString(" ")
 		s.WriteString(helpStyle.Render("[ENTER=Yes] [ESC=No]"))
 		s.WriteString("\n")
+	} else if m.confirmResume {
+		s.WriteString(accentStyle.Render("Resume this chat in its folder?"))
+		s.WriteString(" ")
+		s.WriteString(helpStyle.Render("[ENTER=Yes] [ESC=No]"))
+		s.WriteString("\n")
 	} else if compact {
 		s.WriteString(helpStyle.Render("space select │ enter expand │ d delete │ p preview │ ? help │ q quit"))
 		s.WriteString("\n")
 		s.WriteString(helpStyle.Render("↑/↓ move │ f/b page │ g/G home/end"))
 		s.WriteString("\n")
 	} else {
-		help := "↑/↓ move │ enter expand │ space select │ a all │ d delete │ m ungroup │ p preview │ ? help │ q quit"
+		help := "↑/↓ move │ enter expand/resume │ space select │ d delete │ m ungroup │ p preview │ ? help │ q quit"
 		s.WriteString(helpStyle.Render(help))
 		s.WriteString("\n")
 	}
