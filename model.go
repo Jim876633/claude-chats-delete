@@ -15,8 +15,6 @@ import (
 // is used: shortened timestamp, no VERSION column, two-line help text.
 const compactModeWidth = 110
 
-
-
 var (
 	// One Dark Pro palette approximations
 	activeTabStyle = lipgloss.NewStyle().
@@ -459,18 +457,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.showPreview {
 			contentH := m.previewContentHeight()
 			maxScroll := len(m.previewAllLines) - contentH
-			if maxScroll < 0 { maxScroll = 0 }
+			if maxScroll < 0 {
+				maxScroll = 0
+			}
 			switch msg.String() {
 			case "up", "k":
-				if m.previewScrollOffset > 0 { m.previewScrollOffset-- }
+				if m.previewScrollOffset > 0 {
+					m.previewScrollOffset--
+				}
 			case "down", "j":
-				if m.previewScrollOffset < maxScroll { m.previewScrollOffset++ }
+				if m.previewScrollOffset < maxScroll {
+					m.previewScrollOffset++
+				}
 			case "f", "pgdown":
 				m.previewScrollOffset += contentH
-				if m.previewScrollOffset > maxScroll { m.previewScrollOffset = maxScroll }
+				if m.previewScrollOffset > maxScroll {
+					m.previewScrollOffset = maxScroll
+				}
 			case "b", "pgup":
 				m.previewScrollOffset -= contentH
-				if m.previewScrollOffset < 0 { m.previewScrollOffset = 0 }
+				if m.previewScrollOffset < 0 {
+					m.previewScrollOffset = 0
+				}
 			case "g":
 				m.previewScrollOffset = 0
 			case "G":
@@ -519,9 +527,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// In flat mode, land on the item right after the deleted block
 					minSel := len(m.chats)
 					for idx := range m.selected {
-						if idx < minSel { minSel = idx }
+						if idx < minSel {
+							minSel = idx
+						}
 					}
-					if minSel == len(m.chats) { minSel = m.cursor }
+					if minSel == len(m.chats) {
+						minSel = m.cursor
+					}
 					m.postDeleteCursor = minSel
 				}
 				return m, m.deleteSelectedChats()
@@ -744,12 +756,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.confirmDelete = false
 		if m.grouped {
 			m.cursor = m.postDeleteCursor
-			if m.cursor >= len(m.groupRows) { m.cursor = len(m.groupRows) - 1 }
+			if m.cursor >= len(m.groupRows) {
+				m.cursor = len(m.groupRows) - 1
+			}
 		} else {
 			m.cursor = m.postDeleteCursor
-			if m.cursor >= m.visibleLen() { m.cursor = m.visibleLen() - 1 }
+			if m.cursor >= m.visibleLen() {
+				m.cursor = m.visibleLen() - 1
+			}
 		}
-		if m.cursor < 0 { m.cursor = 0 }
+		if m.cursor < 0 {
+			m.cursor = 0
+		}
 		// Clear other status messages
 		m.error = ""
 		m.copiedMsg = ""
@@ -790,34 +808,49 @@ func (m *model) adjustScroll() {
 	}
 }
 
-
 // previewTextWidth returns the text content width passed to glamour for word-wrapping.
 func (m model) previewTextWidth() int {
 	w := m.width
-	if w < 40 { w = 40 }
+	if w < 40 {
+		w = 40
+	}
 	modalW := w - 4
-	if modalW > 140 { modalW = 140 }
+	if modalW > 140 {
+		modalW = 140
+	}
 	innerW := modalW - 4 // border(1)*2 + padding(1)*2
 	textW := innerW - 8  // role prefix area
-	if textW < 10 { textW = 10 }
+	if textW < 10 {
+		textW = 10
+	}
 	return textW
 }
 
 func (m model) previewContentHeight() int {
 	h := m.height - 11 // borders(2) + header(2) + sep(2) + footer(1) + padding
-	if h < 3 { h = 3 }
-	if h > 60 { h = 60 }
+	if h < 3 {
+		h = 3
+	}
+	if h > 60 {
+		h = 60
+	}
 	return h
 }
 
 func (m model) viewPreview() string {
 	w := m.width
 	h := m.height
-	if w < 40 { w = 40 }
-	if h < 10 { h = 10 }
+	if w < 40 {
+		w = 40
+	}
+	if h < 10 {
+		h = 10
+	}
 
 	modalW := w - 4
-	if modalW > 140 { modalW = 140 }
+	if modalW > 140 {
+		modalW = 140
+	}
 	innerW := modalW - 4 // border(1)*2 + padding(1)*2
 
 	contentH := m.previewContentHeight()
@@ -843,7 +876,9 @@ func (m model) viewPreview() string {
 		titleW := lipgloss.Width(titleStyled)
 		dateW := lipgloss.Width(dateStr)
 		gap1 := innerW - titleW - dateW
-		if gap1 < 1 { gap1 = 1 }
+		if gap1 < 1 {
+			gap1 = 1
+		}
 		s.WriteString(titleStyled + strings.Repeat(" ", gap1) + dateStr + "\n")
 
 		projStr := lipgloss.NewStyle().Foreground(projColor).Render(truncateLeft(decodeProjectPath(chat.Project), 60))
@@ -851,7 +886,9 @@ func (m model) viewPreview() string {
 		projW := lipgloss.Width(projStr)
 		closeW := lipgloss.Width(closeHint)
 		gap2 := innerW - projW - closeW
-		if gap2 < 1 { gap2 = 1 }
+		if gap2 < 1 {
+			gap2 = 1
+		}
 		s.WriteString(projStr + strings.Repeat(" ", gap2) + closeHint + "\n")
 	} else {
 		s.WriteString("\n\n")
@@ -870,11 +907,15 @@ func (m model) viewPreview() string {
 	asstBarStyle := asstRoleStyle
 	toolBarStyle := toolRoleStyle
 	maxText := innerW - 8
-	if maxText < 10 { maxText = 10 }
+	if maxText < 10 {
+		maxText = 10
+	}
 
 	start := m.previewScrollOffset
 	end := start + contentH
-	if end > len(m.previewAllLines) { end = len(m.previewAllLines) }
+	if end > len(m.previewAllLines) {
+		end = len(m.previewAllLines)
+	}
 
 	for i := start; i < end; i++ {
 		line := m.previewAllLines[i]
@@ -906,7 +947,9 @@ func (m model) viewPreview() string {
 		}
 		// Pad to innerW for stable box width
 		rowW := lipgloss.Width(row)
-		if rowW < innerW { row += strings.Repeat(" ", innerW-rowW) }
+		if rowW < innerW {
+			row += strings.Repeat(" ", innerW-rowW)
+		}
 		s.WriteString(row + "\n")
 	}
 	// Pad remaining lines
@@ -920,11 +963,15 @@ func (m model) viewPreview() string {
 	// Footer
 	total := len(m.previewAllLines)
 	scrollInfo := fmt.Sprintf("%d-%d / %d", start+1, end, total)
-	if total == 0 { scrollInfo = "no messages" }
+	if total == 0 {
+		scrollInfo = "no messages"
+	}
 	footLeft := helpStyle.Render("↑/↓ scroll  g/G top/end  " + scrollInfo)
 	footRight := helpStyle.Render("f/b page")
 	footGap := innerW - lipgloss.Width(footLeft) - lipgloss.Width(footRight)
-	if footGap < 1 { footGap = 1 }
+	if footGap < 1 {
+		footGap = 1
+	}
 	s.WriteString(footLeft + strings.Repeat(" ", footGap) + footRight)
 
 	// Wrap in rounded border box
@@ -1069,11 +1116,11 @@ func (m model) View() string {
 	var timestampWidth int
 	var fixedWidth int
 	if compact {
-		timestampWidth = 11 // "01-15 14:32"
+		timestampWidth = 11                     // "01-15 14:32"
 		fixedWidth = 2 + timestampWidth + 5 + 6 // indicator(2) + ts + lines + gaps
 	} else {
 		timestampWidth = 19 // "2025-01-15 14:32:10"
-		fixedWidth = 34 // indicator(2) + ts(19) + lines(5) + gaps(8)
+		fixedWidth = 34     // indicator(2) + ts(19) + lines(5) + gaps(8)
 	}
 
 	linesWidth := 5
@@ -1214,8 +1261,6 @@ func (m model) View() string {
 		s.WriteString(dimStyle.Render(scrollInfo))
 		s.WriteString("\n")
 	}
-
-
 
 	// Bottom separator
 	s.WriteString(dimStyle.Render(strings.Repeat("─", width)))
@@ -1599,11 +1644,15 @@ func (m model) viewGrouped() string {
 			for ci, c := range m.chats {
 				if c.Project == row.project && m.matchesSearch(ci) {
 					totalLines += c.LineCount
-					if c.Timestamp > latestTs { latestTs = c.Timestamp }
+					if c.Timestamp > latestTs {
+						latestTs = c.Timestamp
+					}
 				}
 			}
 			latestDate := ""
-			if len(latestTs) >= 10 { latestDate = latestTs[:10] }
+			if len(latestTs) >= 10 {
+				latestDate = latestTs[:10]
+			}
 
 			if i == m.cursor {
 				// Cursor row: cyan ▌ bar separately + cursor bg
@@ -1617,7 +1666,9 @@ func (m model) viewGrouped() string {
 				}
 				// leftPart excludes the ▌, so account for it in width
 				gap := (width - 1) - runewidth.StringWidth(leftPart) - runewidth.StringWidth(statsStr)
-				if gap < 2 { gap = 2 }
+				if gap < 2 {
+					gap = 2
+				}
 				plainContent := " " + leftPart + strings.Repeat(" ", gap) + statsStr
 				contentW := runewidth.StringWidth(plainContent)
 				if contentW < width-1 {
@@ -1651,7 +1702,9 @@ func (m model) viewGrouped() string {
 						dimBg.Render(" │ ") + dimBg.Render("latest "+latestDate)
 				}
 				gap := width - lipgloss.Width(leftPart) - lipgloss.Width(statsStr)
-				if gap < 2 { gap = 2 }
+				if gap < 2 {
+					gap = 2
+				}
 				s.WriteString(leftPart + spaceBg.Render(strings.Repeat(" ", gap)) + statsStr)
 			}
 			s.WriteString("\n")
@@ -1670,7 +1723,6 @@ func (m model) viewGrouped() string {
 			} else {
 				timestamp = runewidth.Truncate(chat.Timestamp, timestampWidth, "")
 			}
-
 
 			var lines string
 			switch {
@@ -1744,8 +1796,6 @@ func (m model) viewGrouped() string {
 		s.WriteString(dimStyle.Render(scrollInfo))
 		s.WriteString("\n")
 	}
-
-
 
 	// Bottom separator
 	s.WriteString(dimStyle.Render(strings.Repeat("─", width)))
