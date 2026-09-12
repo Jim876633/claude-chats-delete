@@ -136,14 +136,6 @@ func cleanSystemTags(content string) string {
 	return cleaned
 }
 
-// scanChatMetadata reads a chat JSONL file in a single pass and extracts
-// display metadata (title, version, line count). Title priority matches the
-// Claude Code --resume picker: customTitle (/rename) > first user message >
-// summary fallback. Replaces three separate file scans.
-//
-// Scans the full file without an early exit: late /rename records can appear
-// at any line and lineCount needs the whole file, so any bail-out cap would
-// silently break rename detection on long sessions.
 // firstTextFromContent extracts the leading plain-text portion of a message's
 // content, whether it's a plain string (older format) or a block array mixing
 // text with images/tool calls (current format). Returns "" if there's no text
@@ -168,6 +160,14 @@ func firstTextFromContent(raw json.RawMessage) string {
 	return ""
 }
 
+// scanChatMetadata reads a chat JSONL file in a single pass and extracts
+// display metadata (title, version, line count). Title priority matches the
+// Claude Code --resume picker: customTitle (/rename) > first user message >
+// summary fallback. Replaces three separate file scans.
+//
+// Scans the full file without an early exit: late /rename records can appear
+// at any line and lineCount needs the whole file, so any bail-out cap would
+// silently break rename detection on long sessions.
 func scanChatMetadata(jsonlFile string) (title, version, forkParentID string, lineCount int) {
 	file, err := os.Open(jsonlFile)
 	if err != nil {
