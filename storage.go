@@ -144,6 +144,30 @@ func cleanSystemTags(content string) string {
 // Scans the full file without an early exit: late /rename records can appear
 // at any line and lineCount needs the whole file, so any bail-out cap would
 // silently break rename detection on long sessions.
+// firstTextFromContent extracts the leading plain-text portion of a message's
+// content, whether it's a plain string (older format) or a block array mixing
+// text with images/tool calls (current format). Returns "" if there's no text
+// block (e.g. an image-only message), so title detection falls through to the
+// next candidate message.
+func firstTextFromContent(raw json.RawMessage) string {
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return text
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &blocks); err == nil {
+		for _, b := range blocks {
+			if b.Type == "text" && b.Text != "" {
+				return b.Text
+			}
+		}
+	}
+	return ""
+}
+
 func scanChatMetadata(jsonlFile string) (title, version, forkParentID string, lineCount int) {
 	file, err := os.Open(jsonlFile)
 	if err != nil {
@@ -152,8 +176,8 @@ func scanChatMetadata(jsonlFile string) (title, version, forkParentID string, li
 	defer file.Close()
 
 	scanner := bufio.NewScanner(file)
-	buf := make([]byte, 1024*1024) // 1MB buffer for large JSONL lines
-	scanner.Buffer(buf, len(buf))
+	buf := make([]byte, 64*1024)
+	scanner.Buffer(buf, 32*1024*1024) // grow up to 32MB for lines with embedded images
 
 	var firstUserMsg, firstSummary, lastCustomTitle string
 
@@ -185,7 +209,7 @@ func scanChatMetadata(jsonlFile string) (title, version, forkParentID string, li
 		}
 
 		if firstUserMsg == "" && msg.Type == "user" && !msg.IsMeta {
-			if c := cleanSystemTags(msg.Message.Content); c != "" {
+			if c := cleanSystemTags(firstTextFromContent(msg.Message.Content)); c != "" {
 				firstUserMsg = c
 			}
 		}
@@ -232,8 +256,8 @@ func getSlugFromChat(jsonlFile string) string {
 	defer file.Close()
 
 	scanner := bufio.NewScanner(file)
-	buf := make([]byte, 1024*1024) // 1MB buffer for large JSONL lines
-	scanner.Buffer(buf, len(buf))
+	buf := make([]byte, 64*1024)
+	scanner.Buffer(buf, 32*1024*1024) // grow up to 32MB for lines with embedded images
 
 	// Scan all lines to find slug (it can be in any message)
 	for scanner.Scan() {
@@ -438,8 +462,8 @@ func parseAgentIDs(chatFile string) []string {
 	defer file.Close()
 
 	scanner := bufio.NewScanner(file)
-	buf := make([]byte, 1024*1024) // 1MB buffer for large JSONL lines
-	scanner.Buffer(buf, len(buf))
+	buf := make([]byte, 64*1024)
+	scanner.Buffer(buf, 32*1024*1024) // grow up to 32MB for lines with embedded images
 	for scanner.Scan() {
 		var msg struct {
 			AgentID string `json:"agentId"`
@@ -509,8 +533,8 @@ func loadRawPreviewMsgs(path string, max int) []PreviewMessage {
 	defer file.Close()
 
 	scanner := bufio.NewScanner(file)
-	buf := make([]byte, 1024*1024)
-	scanner.Buffer(buf, len(buf))
+	buf := make([]byte, 64*1024)
+	scanner.Buffer(buf, 32*1024*1024) // grow up to 32MB for lines with embedded images
 
 	var result []PreviewMessage
 	scanned := 0

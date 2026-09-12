@@ -55,7 +55,7 @@ type JSONLMessage struct {
 	Summary     string `json:"summary"`
 	CustomTitle string `json:"customTitle"`
 	Message     struct {
-		Content string `json:"content"`
+		Content json.RawMessage `json:"content"`
 	} `json:"message"`
 	ForkedFrom struct {
 		SessionID string `json:"sessionId"`
