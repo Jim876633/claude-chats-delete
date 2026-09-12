@@ -199,6 +199,14 @@ type model struct {
 
 	// True while chats are being scanned from disk in the background.
 	loading bool
+
+	// Search: live filter over title + project path.
+	// searching is true while the "/" input line is capturing keystrokes;
+	// searchQuery persists after enter so the filter stays applied.
+	searching   bool
+	searchQuery string
+	filteredIdx []int        // ordered indices into m.chats matching searchQuery
+	filteredSet map[int]bool // same set, for O(1) membership checks in grouped mode
 }
 
 func initialModel(cfg *Config) model {
@@ -223,12 +231,17 @@ func loadChatsCmd() tea.Cmd {
 
 // rebuildGroupRows creates the virtual row list from chats grouped by project.
 // Projects are ordered by the most recent chat timestamp (newest first).
+// Chats not matching an active search filter (and projects left with no
+// matches) are omitted entirely.
 func (m *model) rebuildGroupRows() {
 	// Collect unique projects in order of first appearance
 	// (chats are already sorted by timestamp desc)
 	seen := make(map[string]bool)
 	var projects []string
-	for _, chat := range m.chats {
+	for i, chat := range m.chats {
+		if !m.matchesSearch(i) {
+			continue
+		}
 		if !seen[chat.Project] {
 			seen[chat.Project] = true
 			projects = append(projects, chat.Project)
@@ -238,6 +251,9 @@ func (m *model) rebuildGroupRows() {
 	// Build chat index groups
 	chatsByProject := make(map[string][]int)
 	for i, chat := range m.chats {
+		if !m.matchesSearch(i) {
+			continue
+		}
 		chatsByProject[chat.Project] = append(chatsByProject[chat.Project], i)
 	}
 
@@ -253,6 +269,64 @@ func (m *model) rebuildGroupRows() {
 	m.groupRows = rows
 }
 
+// matchesSearch reports whether chat index i passes the active search filter.
+// With no query every chat matches.
+func (m model) matchesSearch(i int) bool {
+	if m.searchQuery == "" {
+		return true
+	}
+	return m.filteredSet[i]
+}
+
+// visibleLen returns the number of chats visible under the active search filter.
+func (m model) visibleLen() int {
+	if m.searchQuery == "" {
+		return len(m.chats)
+	}
+	return len(m.filteredIdx)
+}
+
+// visibleChatIdx maps a position in the visible (filtered) list back to the
+// real index into m.chats.
+func (m model) visibleChatIdx(pos int) int {
+	if m.searchQuery == "" {
+		return pos
+	}
+	return m.filteredIdx[pos]
+}
+
+// recomputeSearch rebuilds filteredIdx/filteredSet from the current
+// searchQuery without touching cursor/scroll position. Used after the chat
+// list itself changes (refresh, delete) so a stale filter doesn't go stale.
+func (m *model) recomputeSearch() {
+	q := strings.ToLower(strings.TrimSpace(m.searchQuery))
+	if q == "" {
+		m.filteredIdx = nil
+		m.filteredSet = nil
+	} else {
+		m.filteredIdx = nil
+		m.filteredSet = make(map[int]bool)
+		for i, c := range m.chats {
+			if strings.Contains(strings.ToLower(c.Title), q) ||
+				strings.Contains(strings.ToLower(decodeProjectPath(c.Project)), q) {
+				m.filteredIdx = append(m.filteredIdx, i)
+				m.filteredSet[i] = true
+			}
+		}
+	}
+	if m.grouped {
+		m.rebuildGroupRows()
+	}
+}
+
+// applySearch recomputes the filter and resets the cursor to the top of the
+// (possibly new) visible list. Called on every keystroke while typing.
+func (m *model) applySearch() {
+	m.recomputeSearch()
+	m.cursor = 0
+	m.scrollOffset = 0
+}
+
 // loadPreviewForCursor loads preview lines for the chat currently under the cursor.
 // Uses previewForUUID as a cache key to avoid re-reading the same file.
 func (m *model) loadPreviewForCursor() {
@@ -263,8 +337,8 @@ func (m *model) loadPreviewForCursor() {
 			chatPath, chatUUID = c.Path, c.UUID
 		}
 	} else {
-		if m.cursor < len(m.chats) {
-			c := m.chats[m.cursor]
+		if m.cursor < m.visibleLen() {
+			c := m.chats[m.visibleChatIdx(m.cursor)]
 			chatPath, chatUUID = c.Path, c.UUID
 		}
 	}
@@ -299,7 +373,7 @@ func (m *model) armResume(c Chat) {
 func (m model) chatIndicesForProject(project string) []int {
 	var indices []int
 	for i, chat := range m.chats {
-		if chat.Project == project {
+		if chat.Project == project && m.matchesSearch(i) {
 			indices = append(indices, i)
 		}
 	}
@@ -310,6 +384,10 @@ func (m model) renderTabBar() string {
 	appName := accentStyle.Render("claude chats")
 	left := appName
 	var stats string
+	countStr := fmt.Sprintf("%d chats", len(m.chats))
+	if m.searchQuery != "" {
+		countStr = fmt.Sprintf("%d/%d chats", m.visibleLen(), len(m.chats))
+	}
 	if len(m.selected) > 0 {
 		badge := lipgloss.NewStyle().
 			Background(adaptiveColor("73", "6")).
@@ -317,9 +395,9 @@ func (m model) renderTabBar() string {
 			Bold(true).
 			Padding(0, 1).
 			Render(fmt.Sprintf("%d selected", len(m.selected)))
-		stats = dimStyle.Render(fmt.Sprintf("%d chats", len(m.chats))) + "  " + badge
+		stats = dimStyle.Render(countStr) + "  " + badge
 	} else {
-		stats = dimStyle.Render(fmt.Sprintf("%d chats", len(m.chats)))
+		stats = dimStyle.Render(countStr)
 	}
 	width := m.width
 	if width < 75 {
@@ -336,6 +414,9 @@ func (m model) visibleHeight() int {
 	fixed := 9 // tabbar(1) + col-header(1) + sep(1) + bottom-sep(1) + help(1) + status(0-1)
 	if m.width < compactModeWidth {
 		fixed = 10 // compact: +1 for extra help line
+	}
+	if m.searching || m.searchQuery != "" {
+		fixed++ // search input line
 	}
 
 	h := m.height - fixed
@@ -401,6 +482,32 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// Search input intercepts all keys while capturing a query
+		if m.searching {
+			switch msg.String() {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "enter":
+				m.searching = false
+			case "esc":
+				m.searching = false
+				m.searchQuery = ""
+				m.applySearch()
+			case "backspace":
+				if m.searchQuery != "" {
+					r := []rune(m.searchQuery)
+					m.searchQuery = string(r[:len(r)-1])
+					m.applySearch()
+				}
+			default:
+				if msg.Type == tea.KeyRunes {
+					m.searchQuery += string(msg.Runes)
+					m.applySearch()
+				}
+			}
+			return m, nil
+		}
+
 		// Confirmation dialog intercepts esc before global keys
 		if m.confirmDelete {
 			switch msg.String() {
@@ -450,6 +557,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "?":
 			m.showHelp = true
 			return m, nil
+		case "/":
+			m.searching = true
+			return m, nil
 		}
 
 		// Grouped mode
@@ -461,8 +571,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 
 		case "enter":
-			if m.cursor < len(m.chats) {
-				m.armResume(m.chats[m.cursor])
+			if m.cursor < m.visibleLen() {
+				m.armResume(m.chats[m.visibleChatIdx(m.cursor)])
 			}
 
 		case "up", "k":
@@ -472,7 +582,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "down", "j":
-			if m.cursor < len(m.chats)-1 {
+			if m.cursor < m.visibleLen()-1 {
 				m.cursor++
 				m.adjustScroll()
 			}
@@ -480,8 +590,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "f", "pgdown":
 			visibleHeight := m.visibleHeight()
 			m.cursor += visibleHeight
-			if m.cursor >= len(m.chats) {
-				m.cursor = len(m.chats) - 1
+			if m.cursor >= m.visibleLen() {
+				m.cursor = m.visibleLen() - 1
 			}
 			m.adjustScroll()
 
@@ -496,8 +606,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "F":
 			visibleHeight := m.visibleHeight()
 			m.cursor += visibleHeight / 2
-			if m.cursor >= len(m.chats) {
-				m.cursor = len(m.chats) - 1
+			if m.cursor >= m.visibleLen() {
+				m.cursor = m.visibleLen() - 1
 			}
 			m.adjustScroll()
 
@@ -514,31 +624,44 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.adjustScroll()
 
 		case "G", "end":
-			if len(m.chats) > 0 {
-				m.cursor = len(m.chats) - 1
+			if m.visibleLen() > 0 {
+				m.cursor = m.visibleLen() - 1
 			}
 			m.adjustScroll()
 
 		case " ":
 			// Explicit toggle — user now owns the selection.
-			m.autoSelected = false
-			if m.selected[m.cursor] {
-				delete(m.selected, m.cursor)
-			} else {
-				m.selected[m.cursor] = true
+			if m.cursor < m.visibleLen() {
+				m.autoSelected = false
+				idx := m.visibleChatIdx(m.cursor)
+				if m.selected[idx] {
+					delete(m.selected, idx)
+				} else {
+					m.selected[idx] = true
+				}
 			}
 
 		case "a":
-			// Select all / deselect all toggle
-			if len(m.chats) == 0 {
+			// Select all / deselect all toggle, scoped to the visible (filtered) chats
+			n := m.visibleLen()
+			if n == 0 {
 				return m, nil // Nothing to select
 			}
 			m.autoSelected = false
-			if len(m.selected) == len(m.chats) {
-				m.selected = make(map[int]bool)
+			allSelected := true
+			for pos := 0; pos < n; pos++ {
+				if !m.selected[m.visibleChatIdx(pos)] {
+					allSelected = false
+					break
+				}
+			}
+			if allSelected {
+				for pos := 0; pos < n; pos++ {
+					delete(m.selected, m.visibleChatIdx(pos))
+				}
 			} else {
-				for i := range m.chats {
-					m.selected[i] = true
+				for pos := 0; pos < n; pos++ {
+					m.selected[m.visibleChatIdx(pos)] = true
 				}
 			}
 
@@ -546,8 +669,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Explicit selection wins: if anything is already selected
 			// (via Space or a), delete those. Otherwise auto-select the
 			// chat under the cursor for this single gesture.
-			if len(m.selected) == 0 && m.cursor < len(m.chats) {
-				m.selected[m.cursor] = true
+			if len(m.selected) == 0 && m.cursor < m.visibleLen() {
+				m.selected[m.visibleChatIdx(m.cursor)] = true
 				m.autoSelected = true
 			}
 			if len(m.selected) > 0 {
@@ -572,6 +695,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "r":
 			// Refresh
 			m.chats = findAllChats()
+			m.recomputeSearch()
 			m.selected = make(map[int]bool)
 			m.autoSelected = false
 			m.cursor = 0
@@ -590,8 +714,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "c":
 			// Copy UUID to clipboard
-			if m.cursor < len(m.chats) {
-				uuid := m.chats[m.cursor].UUID
+			if m.cursor < m.visibleLen() {
+				uuid := m.chats[m.visibleChatIdx(m.cursor)].UUID
 				if err := copyToClipboard(uuid); err != nil {
 					m.error = fmt.Sprintf("Failed to copy: %v", err)
 				} else {
@@ -613,17 +737,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.deleteTimer++
 		currentTimer := m.deleteTimer
 		m.chats = findAllChats()
+		m.recomputeSearch()
 		m.selected = make(map[int]bool)
 		m.autoSelected = false
 		m.scrollOffset = 0
 		m.confirmDelete = false
 		if m.grouped {
-			m.rebuildGroupRows()
 			m.cursor = m.postDeleteCursor
 			if m.cursor >= len(m.groupRows) { m.cursor = len(m.groupRows) - 1 }
 		} else {
 			m.cursor = m.postDeleteCursor
-			if m.cursor >= len(m.chats) { m.cursor = len(m.chats) - 1 }
+			if m.cursor >= m.visibleLen() { m.cursor = m.visibleLen() - 1 }
 		}
 		if m.cursor < 0 { m.cursor = 0 }
 		// Clear other status messages
@@ -875,6 +999,7 @@ func (m model) viewHelp() string {
 		{
 			title: "General",
 			rows: [][2]string{
+				{"/", "search by title / project"},
 				{"?", "toggle this help"},
 				{"q/esc/ctrl+c", "quit"},
 			},
@@ -981,17 +1106,22 @@ func (m model) View() string {
 	visibleHeight := m.visibleHeight()
 	// confirmDelete dialog replaces help text, no additional space needed
 
+	n := m.visibleLen()
 	start := m.scrollOffset
 	end := start + visibleHeight
-	if end > len(m.chats) {
-		end = len(m.chats)
+	if end > n {
+		end = n
 	}
 
 	if m.loading {
 		s.WriteString(dimStyle.Render("  Loading chats..."))
 		s.WriteString("\n")
+	} else if n == 0 && m.searchQuery != "" {
+		s.WriteString(dimStyle.Render("  No chats match your search."))
+		s.WriteString("\n")
 	}
-	for i := start; i < end; i++ {
+	for pos := start; pos < end; pos++ {
+		i := m.visibleChatIdx(pos)
 		chat := m.chats[i]
 
 		// Truncate fields using visual width
@@ -1032,7 +1162,7 @@ func (m model) View() string {
 		}
 		noTitle := strings.HasPrefix(chat.Title, "[No title]")
 		projColor := colorForProject(chat.Project)
-		if i == m.cursor {
+		if pos == m.cursor {
 			// Cursor row: ▌ bar rendered separately with color + cursor bg
 			var cursorBar string
 			if m.selected[i] {
@@ -1079,8 +1209,8 @@ func (m model) View() string {
 	}
 
 	// Scroll indicator
-	if len(m.chats) > visibleHeight {
-		scrollInfo := fmt.Sprintf("[%d-%d/%d]", start+1, end, len(m.chats))
+	if n > visibleHeight {
+		scrollInfo := fmt.Sprintf("[%d-%d/%d]", start+1, end, n)
 		s.WriteString(dimStyle.Render(scrollInfo))
 		s.WriteString("\n")
 	}
@@ -1103,6 +1233,18 @@ func (m model) View() string {
 		s.WriteString("\n")
 	}
 
+	// Search input line
+	if m.searching || m.searchQuery != "" {
+		line := accentStyle.Render("/" + m.searchQuery)
+		if m.searching {
+			line += "▌"
+		} else {
+			line += helpStyle.Render("  (esc clear · / edit)")
+		}
+		s.WriteString(line)
+		s.WriteString("\n")
+	}
+
 	// Help / Confirmation dialog
 	if m.confirmDelete {
 		s.WriteString(errorStyle.Render(fmt.Sprintf("Delete %d chat(s)?", len(m.selected))))
@@ -1120,7 +1262,7 @@ func (m model) View() string {
 		s.WriteString(helpStyle.Render("↑/↓ move │ f/b page │ g/G home/end"))
 		s.WriteString("\n")
 	} else {
-		help := "↑/↓ move │ enter resume │ space select │ d delete │ m group │ p preview │ ? help │ q quit"
+		help := "↑/↓ move │ enter resume │ space select │ d delete │ m group │ p preview │ / search │ ? help │ q quit"
 		s.WriteString(helpStyle.Render(help))
 		s.WriteString("\n")
 	}
@@ -1241,15 +1383,31 @@ func (m model) updateGrouped(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "a":
-		if len(m.chats) == 0 {
+		// Select all / deselect all toggle, scoped to the visible (filtered) chats
+		var visIdx []int
+		for i := range m.chats {
+			if m.matchesSearch(i) {
+				visIdx = append(visIdx, i)
+			}
+		}
+		if len(visIdx) == 0 {
 			return m, nil
 		}
 		m.autoSelected = false
-		if len(m.selected) == len(m.chats) {
-			m.selected = make(map[int]bool)
+		allSelected := true
+		for _, idx := range visIdx {
+			if !m.selected[idx] {
+				allSelected = false
+				break
+			}
+		}
+		if allSelected {
+			for _, idx := range visIdx {
+				delete(m.selected, idx)
+			}
 		} else {
-			for i := range m.chats {
-				m.selected[i] = true
+			for _, idx := range visIdx {
+				m.selected[idx] = true
 			}
 		}
 
@@ -1287,6 +1445,7 @@ func (m model) updateGrouped(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "r":
 		m.chats = findAllChats()
+		m.recomputeSearch()
 		m.selected = make(map[int]bool)
 		m.autoSelected = false
 		m.cursor = 0
@@ -1295,7 +1454,6 @@ func (m model) updateGrouped(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.deleted = 0
 		m.copiedMsg = ""
 		m.previewForUUID = ""
-		m.rebuildGroupRows()
 
 	case "e":
 		for _, chat := range m.chats {
@@ -1352,7 +1510,7 @@ func (m *model) adjustScrollGrouped() {
 // selectedCountForProject returns how many chats in a project are selected.
 func (m model) selectedCountForProject(project string) (selected, total int) {
 	for i, chat := range m.chats {
-		if chat.Project == project {
+		if chat.Project == project && m.matchesSearch(i) {
 			total++
 			if m.selected[i] {
 				selected++
@@ -1418,6 +1576,9 @@ func (m model) viewGrouped() string {
 	if m.loading {
 		s.WriteString(dimStyle.Render("  Loading chats..."))
 		s.WriteString("\n")
+	} else if rowCount == 0 && m.searchQuery != "" {
+		s.WriteString(dimStyle.Render("  No chats match your search."))
+		s.WriteString("\n")
 	}
 	for i := start; i < end; i++ {
 		row := m.groupRows[i]
@@ -1435,8 +1596,8 @@ func (m model) viewGrouped() string {
 			// Compute group stats inline
 			var totalLines int
 			var latestTs string
-			for _, c := range m.chats {
-				if c.Project == row.project {
+			for ci, c := range m.chats {
+				if c.Project == row.project && m.matchesSearch(ci) {
 					totalLines += c.LineCount
 					if c.Timestamp > latestTs { latestTs = c.Timestamp }
 				}
@@ -1602,6 +1763,18 @@ func (m model) viewGrouped() string {
 		s.WriteString("\n")
 	}
 
+	// Search input line
+	if m.searching || m.searchQuery != "" {
+		line := accentStyle.Render("/" + m.searchQuery)
+		if m.searching {
+			line += "▌"
+		} else {
+			line += helpStyle.Render("  (esc clear · / edit)")
+		}
+		s.WriteString(line)
+		s.WriteString("\n")
+	}
+
 	// Help / Confirmation dialog
 	if m.confirmDelete {
 		s.WriteString(errorStyle.Render(fmt.Sprintf("Delete %d chat(s)?", len(m.selected))))
@@ -1619,7 +1792,7 @@ func (m model) viewGrouped() string {
 		s.WriteString(helpStyle.Render("↑/↓ move │ f/b page │ g/G home/end"))
 		s.WriteString("\n")
 	} else {
-		help := "↑/↓ move │ enter expand/resume │ space select │ d delete │ m ungroup │ p preview │ ? help │ q quit"
+		help := "↑/↓ move │ enter expand/resume │ space select │ d delete │ m ungroup │ p preview │ / search │ ? help │ q quit"
 		s.WriteString(helpStyle.Render(help))
 		s.WriteString("\n")
 	}
