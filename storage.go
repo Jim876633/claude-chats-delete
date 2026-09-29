@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -56,27 +57,62 @@ func findAllChats() []Chat {
 	// Each ref is scanned independently (its own file handle, its own result
 	// slot), so the scans can run concurrently and only need to be bounded to
 	// avoid exhausting file descriptors on large history directories.
+	cache := loadMetadataCache()
 	chats := make([]Chat, len(refs))
+	metas := make([]cachedMeta, len(refs))
+	scanned := make([]bool, len(refs))
 	g := new(errgroup.Group)
 	g.SetLimit(runtime.NumCPU())
 	for i, ref := range refs {
 		i, ref := i, ref
 		g.Go(func() error {
-			title, version, forkParentID, lineCount := scanChatMetadata(ref.path)
+			timestamp := "Unknown"
+			meta, hit := cachedMeta{}, false
+			if info, err := os.Stat(ref.path); err == nil {
+				timestamp = info.ModTime().Format("2006-01-02 15:04:05")
+				c, ok := cache[ref.path]
+				hit = ok && c.Size == info.Size() && c.ModTime == info.ModTime().UnixNano()
+				meta = c
+				if !hit {
+					meta = cachedMeta{Size: info.Size(), ModTime: info.ModTime().UnixNano()}
+				}
+			}
+			if !hit {
+				meta.Title, meta.Version, meta.ForkParentID, meta.LineCount = scanChatMetadata(ref.path)
+				scanned[i] = meta.ModTime != 0
+			}
+			metas[i] = meta
 			chats[i] = Chat{
 				UUID:         ref.uuid,
-				Title:        title,
-				Timestamp:    getChatTimestamp(ref.path),
+				Title:        meta.Title,
+				Timestamp:    timestamp,
 				Project:      ref.project,
-				Version:      version,
-				LineCount:    lineCount,
+				Version:      meta.Version,
+				LineCount:    meta.LineCount,
 				Path:         ref.path,
-				ForkParentID: forkParentID,
+				ForkParentID: meta.ForkParentID,
 			}
 			return nil
 		})
 	}
 	g.Wait()
+
+	// Rebuilding from the current refs also prunes entries for deleted chats.
+	dirty := len(cache) != len(refs)
+	fresh := make(map[string]cachedMeta, len(refs))
+	for i, ref := range refs {
+		// Open failures are usually transient (permissions) and wouldn't bump
+		// mtime when fixed, so caching them would pin the error title.
+		if metas[i].ModTime == 0 || metas[i].Title == errorOpeningTitle {
+			dirty = true
+			continue
+		}
+		fresh[ref.path] = metas[i]
+		dirty = dirty || scanned[i]
+	}
+	if dirty {
+		saveMetadataCache(fresh)
+	}
 
 	// Sort by timestamp (newest first)
 	sort.Slice(chats, func(i, j int) bool {
@@ -168,10 +204,19 @@ func firstTextFromContent(raw json.RawMessage) string {
 // Scans the full file without an early exit: late /rename records can appear
 // at any line and lineCount needs the whole file, so any bail-out cap would
 // silently break rename detection on long sessions.
+const errorOpeningTitle = "[Error opening file]"
+
+var (
+	customTitleMarker = []byte(`"custom-title"`)
+	forkedFromMarker  = []byte(`"forkedFrom"`)
+	summaryMarker     = []byte(`"summary"`)
+	userTypeMarker    = []byte(`"user"`)
+)
+
 func scanChatMetadata(jsonlFile string) (title, version, forkParentID string, lineCount int) {
 	file, err := os.Open(jsonlFile)
 	if err != nil {
-		return "[Error opening file]", "", "", 0
+		return errorOpeningTitle, "", "", 0
 	}
 	defer file.Close()
 
@@ -183,9 +228,20 @@ func scanChatMetadata(jsonlFile string) (title, version, forkParentID string, li
 
 	for scanner.Scan() {
 		lineCount++
+		line := scanner.Bytes()
+
+		// Most lines are tool calls/results that can't change any field once
+		// version is known; skipping their Unmarshal is the bulk of the speedup.
+		if version != "" &&
+			!bytes.Contains(line, customTitleMarker) &&
+			(forkParentID != "" || !bytes.Contains(line, forkedFromMarker)) &&
+			(firstSummary != "" || !bytes.Contains(line, summaryMarker)) &&
+			(firstUserMsg != "" || !bytes.Contains(line, userTypeMarker)) {
+			continue
+		}
 
 		var msg JSONLMessage
-		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
+		if err := json.Unmarshal(line, &msg); err != nil {
 			continue
 		}
 
@@ -238,14 +294,6 @@ func getChatTitle(jsonlFile string) string {
 func getChatVersion(jsonlFile string) string {
 	_, version, _, _ := scanChatMetadata(jsonlFile)
 	return version
-}
-
-func getChatTimestamp(jsonlFile string) string {
-	info, err := os.Stat(jsonlFile)
-	if err != nil {
-		return "Unknown"
-	}
-	return info.ModTime().Format("2006-01-02 15:04:05")
 }
 
 func getSlugFromChat(jsonlFile string) string {

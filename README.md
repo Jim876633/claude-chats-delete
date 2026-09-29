@@ -51,7 +51,7 @@ make uninstall # remove ~/.local/bin/c
 c
 ```
 
-On first run you'll be prompted to specify your Claude directory. Configuration is saved to `~/.config/claude-chats/config.json`.
+On first run you'll be prompted to specify your Claude directory. Configuration is saved to `~/.config/claude-chats/config.json`. Chat metadata is cached in `~/.config/claude-chats/metadata-cache.json` and re-scanned only for files whose size or modification time changed, so startup stays fast as history grows; deleting the cache file simply forces a full re-scan.
 
 ### Keyboard Shortcuts
 

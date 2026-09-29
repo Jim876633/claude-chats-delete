@@ -261,6 +261,22 @@ func TestScanChatMetadata(t *testing.T) {
 	}
 }
 
+func TestScanChatMetadata_LateLinesAfterPrefilter(t *testing.T) {
+	// Lines skipped by the prefilter must still count, and late summary/rename
+	// records must still be picked up.
+	lines := []string{
+		`{"type":"assistant","version":"2.1.76","message":{"content":"x"}}`,
+		`{"type":"assistant","message":{"content":"y"}}`,
+		`{"type":"summary","summary":"sum"}`,
+		`{"type":"assistant","message":{"content":"z"}}`,
+		`{"type":"custom-title","customTitle":"late"}`,
+	}
+	title, version, _, lineCount := scanChatMetadata(writeTempJSONL(t, lines))
+	if title != "late" || version != "2.1.76" || lineCount != 5 {
+		t.Errorf("got %q %q %d, want late 2.1.76 5", title, version, lineCount)
+	}
+}
+
 func TestScanChatMetadata_ForkParentID(t *testing.T) {
 	// Locks in extraction of forkedFrom.sessionId. Without this the JSON tag
 	// could silently drift (e.g. renamed to session_id) and detection would
@@ -348,6 +364,7 @@ func setupStorageDirs(t *testing.T) string {
 	origFileHistory := fileHistoryDir
 	origPlans := plansDir
 	origAgents := agentsDir
+	origCache := metadataCachePath
 
 	claudeDir = tmp
 	projectsDir = filepath.Join(tmp, "projects")
@@ -358,6 +375,7 @@ func setupStorageDirs(t *testing.T) string {
 	fileHistoryDir = filepath.Join(tmp, "file-history")
 	plansDir = filepath.Join(tmp, "plans")
 	agentsDir = filepath.Join(tmp, "agents")
+	metadataCachePath = filepath.Join(tmp, "metadata-cache.json")
 
 	for _, d := range []string{projectsDir, debugDir, todosDir, sessionDir, tasksDir, fileHistoryDir, plansDir, agentsDir} {
 		if err := os.MkdirAll(d, 0755); err != nil {
@@ -375,6 +393,7 @@ func setupStorageDirs(t *testing.T) string {
 		fileHistoryDir = origFileHistory
 		plansDir = origPlans
 		agentsDir = origAgents
+		metadataCachePath = origCache
 	})
 
 	return tmp
